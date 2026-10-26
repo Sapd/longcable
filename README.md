@@ -77,7 +77,8 @@ git clone https://github.com/Sapd/longcable.git && cd longcable
 swift build -c release
 ```
 
-Then use `swift run Longcable` instead of `bin/Longcable` below.
+Then use `swift run Longcable` instead of `open Longcable.app` below, or run
+`scripts/package-release.sh` to build the same package as a release.
 </details>
 
 Install the background service. Arguments: the address to listen on, then which PCs may
@@ -94,7 +95,7 @@ sudo scripts/install-mac.sh --skip-build 0.0.0.0 192.168.1.20,192.168.1.21
 Then pick the devices to share in the menu-bar app:
 
 ```sh
-bin/Longcable &
+open Longcable.app        # or drag it into /Applications first
 ```
 
 ### 2. Windows
