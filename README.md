@@ -48,8 +48,8 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | Both usbip-win2 receive modes | work; low-latency is used day to day |
 | Normal Star Citizen sessions | hours of gaming with both sticks and the eye tracker |
 
-Beyond these specific checks, it is in daily use: I play Star Citizen for hours with it,
-and the sticks feel the same as when plugged in directly.
+Beyond these specific checks, it is in daily use: I play Star Citizen with it for hours
+at a time.
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
 53 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
