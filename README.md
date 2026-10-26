@@ -151,9 +151,10 @@ up to 16 devices. Sleep/wake and long sessions need more testing.
 > testing and responsibility are mine.
 >
 > I've been an open-source developer for years: see [my GitHub profile](https://github.com/Sapd)
-> and projects like [HeadsetControl](https://github.com/Sapd/HeadsetControl) or
-> [my OIDC login work](https://github.com/advplyr/audiobookshelf/pulls?q=is%3Apr+author%3ASapd)
-> in [Audiobookshelf](https://github.com/advplyr/audiobookshelf).
+> and projects like [HeadsetControl](https://github.com/Sapd/HeadsetControl) or the OpenID
+> Connect login in [Audiobookshelf](https://github.com/advplyr/audiobookshelf), which I
+> took over from [its first implementation](https://github.com/advplyr/audiobookshelf/pull/1636)
+> and have continued since ([my PRs](https://github.com/advplyr/audiobookshelf/pulls?q=is%3Apr+author%3ASapd)).
 
 ## License
 
