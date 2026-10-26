@@ -132,7 +132,9 @@ final class Target {
     let pinned = matchingConfig.portBound == true
     return stateLock.withLock {
       DeviceStatus(
-        id: busID, name: identity?.name ?? config.label,
+        id: busID,
+        name: [identity?.name, config.productName, config.label]
+          .compactMap { $0?.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? busID,
         model: String(format: "%04x:%04x", config.vendor, config.product),
         serial: identity?.serial ?? config.label, enabled: enabled,
         state: present ? state : "Not plugged in",

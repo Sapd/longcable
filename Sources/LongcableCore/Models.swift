@@ -37,14 +37,17 @@ public struct TargetConfig: Codable, Equatable, Sendable {
   public var label: String
   public var hardwareSerial: String?
   public var portBound: Bool?
+  // Shown while the device is unplugged; never used for matching.
+  public var productName: String?
   public init(vendor: UInt16, product: UInt16, location: UInt32, label: String,
-              hardwareSerial: String? = nil, portBound: Bool? = nil) {
+              hardwareSerial: String? = nil, portBound: Bool? = nil, productName: String? = nil) {
     self.vendor = vendor
     self.product = product
     self.location = location
     self.label = label
     self.hardwareSerial = hardwareSerial
     self.portBound = portBound
+    self.productName = productName
   }
   public func matches(vendor: UInt32, product: UInt32, location: UInt32, serial: String = "") -> Bool {
     UInt32(self.vendor) == vendor && UInt32(self.product) == product

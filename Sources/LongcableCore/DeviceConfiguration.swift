@@ -113,7 +113,9 @@ func appendedDevice(_ device: LocalUSBDevice, to existing: [TargetConfig]) throw
   }
   let result = existing + [TargetConfig(vendor: vendor, product: product,
     location: location, label: label,
-    hardwareSerial: device.serial.isEmpty ? nil : device.serial)]
+    hardwareSerial: device.serial.isEmpty ? nil : device.serial,
+    productName: device.name.trimmingCharacters(in: .whitespaces).isEmpty
+      ? nil : device.name.trimmingCharacters(in: .whitespaces))]
   try validateSavedTargets(result, base: existing)
   return result
 }

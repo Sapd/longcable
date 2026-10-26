@@ -18,6 +18,11 @@ final class PlugAndPlayTests: XCTestCase {
     XCTAssertEqual(result[0], first)
     XCTAssertEqual(result.count, 2)
     XCTAssertEqual(result[1].label, "USB21040313")
+    XCTAssertEqual(result[1].productName, "EyeChip")
+    // Unplugged devices show the remembered product name, not the internal label.
+    XCTAssertEqual(Target(result[1], slot: 1).snapshot(present: false).name, "EyeChip")
+    var spaced = result[1]; spaced.productName = "  VKBsim Gladiator EVO L "
+    XCTAssertEqual(Target(spaced, slot: 1).snapshot(present: false).name, "VKBsim Gladiator EVO L")
     XCTAssertTrue(result[1].matches(vendor: 0x2104, product: 0x0313, location: 999, serial: "serial"))
     XCTAssertEqual(Target(result[0], slot: 0).busID, "1-1")
     XCTAssertEqual(Target(result[1], slot: 1).busID, "1-2")
