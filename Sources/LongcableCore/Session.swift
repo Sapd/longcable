@@ -40,7 +40,6 @@ final class Transfer {
   var request: IOUSBDeviceRequest?
   var zeroPacketPhase = false
   var payloadBytes = 0
-  var resetAborted = false
   var address: UInt8 { endpoint == 0 ? 0 : UInt8(endpoint | (direction == 1 ? 0x80 : 0)) }
   var expectedLength: Int { request.map { Int($0.wLength) } ?? data.length }
   init(seq: UInt32, direction: UInt32, endpoint: UInt32, length: Int) {
@@ -56,14 +55,26 @@ final class Session {
   let transport: USBTransferTransport
   private let operations = DispatchQueue(label: "org.sapd.longcable.session.operations")
   private let operationKey = DispatchSpecificKey<Bool>()
-  // pending tracks requests still owed a wire reply. active also retains cancelled
-  // native requests, so UNLINK cannot release their count/buffer admission budget.
+  // pending tracks requests still owed a wire reply. active retains unlinked
+  // native requests until completion, but never work from a closed generation.
   var pending = [UInt32: Transfer]()
   private var active = [UInt8: [Transfer]]()
   private var queued = [UInt8: [Transfer]]()
   var closed = false
   private var transportBroken = false
-  init(_ target: Target, _ connection: Connection, transport: USBTransferTransport? = nil) {
+  private struct IsoProgress {
+    var generation: UInt64 = 0
+    var lastCompletion: Int64 = 0
+    var logged = false
+  }
+  private var isoProgress = [UInt8: IsoProgress]()
+  private var isoWatchdog: DispatchSourceTimer?
+  private let now: () -> Int64
+  private let log: (String) -> Void
+  init(_ target: Target, _ connection: Connection, transport: USBTransferTransport? = nil,
+    now: @escaping () -> Int64 = monotonicMS,
+    log: @escaping (String) -> Void = { EventLog.shared.write($0) }) {
+    self.now = now; self.log = log
     self.target = target
     self.connection = connection
     self.transport = transport ?? usb
@@ -150,12 +161,6 @@ final class Session {
   }
   private func nativeCompleted(_ job: Transfer, result: IOReturn, bytes: Int) {
     guard active[job.address]?.contains(where: { $0 === job }) == true else { return }
-    // A successful callback can have been posted before a reset but processed
-    // afterwards. It must never append a ZLP to the replacement pipe generation.
-    if job.resetAborted {
-      finish(job, result: kIOReturnAborted, bytes: job.zeroPacketPhase ? job.payloadBytes : bytes)
-      return
-    }
     if !closed, pending[job.seq] === job, !job.zeroPacketPhase,
       result == kIOReturnSuccess, job.flags & 0x40 != 0,
       bytes == job.data.length, bytes > 0,
@@ -177,13 +182,20 @@ final class Session {
   private func invalidateEndpoints(_ addresses: Set<UInt8>) {
     var discarded = [Transfer]()
     for address in addresses {
-      active[address]?.forEach { $0.resetAborted = true }
+      // Detach the entire old generation before finish() can refill a pipe.
+      // Native closures retain each job (and iso frame list) independently;
+      // they may arrive late or never, but cannot gate the replacement pipe.
+      if var progress = isoProgress[address] {
+        progress.generation &+= 1
+        progress.lastCompletion = now(); progress.logged = false
+        isoProgress[address] = progress
+      }
+      discarded += active.removeValue(forKey: address) ?? []
       discarded += queued.removeValue(forKey: address) ?? []
     }
-    // Remove every affected queue before finishing any item; finish() may start
-    // a successor, and pre-reset OUT work must never reach freshly reset pipes.
     for job in discarded { finish(job, result: kIOReturnAborted, bytes: 0) }
   }
+
   func submit(_ h: Data) throws -> Bool {
     guard h.count == 48 else { return false }
     let seq = h.u32(4), direction = h.u32(12), ep = h.u32(16), length = h.u32(24)
@@ -222,6 +234,14 @@ final class Session {
       let retained = retainedJobs
       guard !closed, !transportBroken, retained.count < 64, pending[seq] == nil,
         retained.reduce(0, { $0 + $1.data.length }) + Int(length) <= 8_388_608 else { return false }
+      if !job.isoPackets.isEmpty {
+        if !pending.values.contains(where: { $0.address == job.address && !$0.isoPackets.isEmpty }) {
+          var progress = isoProgress[job.address] ?? IsoProgress()
+          progress.lastCompletion = now(); progress.logged = false
+          isoProgress[job.address] = progress
+        }
+        startIsoWatchdog()
+      }
       pending[seq] = job
       queued[job.address, default: []].append(job)
       target.queued(pending.count)
@@ -236,7 +256,7 @@ final class Session {
     // Iso streams need multiple URBs on the controller to avoid a TCP round-trip
     // between consecutive frame lists. Bulk/control/interrupt stay serialized.
     guard running.isEmpty || (!first.isoPackets.isEmpty && running.count < 8
-      && running.allSatisfy { !$0.isoPackets.isEmpty && !$0.resetAborted }) else { return }
+      && running.allSatisfy { !$0.isoPackets.isEmpty }) else { return }
     let job = jobs.removeFirst()
     queued[address] = jobs
     guard pending[job.seq] === job else { startNext(address); return }
@@ -331,6 +351,10 @@ final class Session {
               [weak self, job] result, frame, packets in
               self?.operations.async { [weak self, job] in
                 guard let self, self.active[job.address]?.contains(where: { $0 === job }) == true else { return }
+                if var progress = self.isoProgress[job.address] {
+                  progress.lastCompletion = self.now(); progress.logged = false
+                  self.isoProgress[job.address] = progress
+                }
                 job.startFrame = frame
                 job.isoPackets = packets
                 job.isoCompleted = true
@@ -346,6 +370,30 @@ final class Session {
       }
     } catch { finish(job, result: nativeError(error), bytes: 0) }
   }
+  private func startIsoWatchdog() {
+    guard isoWatchdog == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: operations)
+    timer.schedule(deadline: .now() + 1, repeating: 1)
+    timer.setEventHandler { [weak self] in self?.checkIsoWatchdog() }
+    isoWatchdog = timer
+    timer.resume()
+  }
+  // Internal entry point lets tests advance a fake clock without sleeping.
+  func checkIsoWatchdog() {
+    serialized {
+      guard !closed else { return }
+      for (address, var progress) in isoProgress {
+        let waiting = pending.values.filter { $0.address == address && !$0.isoPackets.isEmpty }.count
+        guard waiting > 0, !progress.logged, now() - progress.lastCompletion > 2000 else { continue }
+        progress.logged = true
+        isoProgress[address] = progress
+        let running = active[address]?.count ?? 0
+        let queuedCount = queued[address]?.count ?? 0
+        log("Iso endpoint \(String(format: "0x%02x", address)) stalled >2s generation \(progress.generation) active \(running) queued \(queuedCount) pending \(waiting)")
+      }
+    }
+  }
+  deinit { isoWatchdog?.cancel() }
   func unlink(_ h: Data) {
     guard h.u32(8) == target.wireID else { connection.interrupt(); return }
     serialized {
@@ -364,7 +412,13 @@ final class Session {
         // until completion rather than aborting neighbouring stream packets.
         // Already scheduled OUT packets may still reach the device after UNLINK.
         if !job.isoPackets.isEmpty && (active[job.address]?.count ?? 0) > 1 { return }
-        do { try transport.abort(job.address) }
+        do {
+          try transport.abort(job.address)
+          // A pipe-wide iso abort closes this scheduling generation even when
+          // IOUSBHost never calls back. Shared-pipe logical UNLINK above does
+          // not abort neighbours and continues to retain its native admission.
+          if !job.isoPackets.isEmpty { invalidateEndpoints([job.address]) }
+        }
         catch { transportBroken = true; connection.interrupt() }
       } else {
         queued[job.address]?.removeAll { $0 === job }
@@ -374,6 +428,7 @@ final class Session {
   func shutdownTransfers() {
     serialized {
       closed = true
+      isoWatchdog?.cancel(); isoWatchdog = nil
       pending.removeAll()
       queued.removeAll()
       usb.release()

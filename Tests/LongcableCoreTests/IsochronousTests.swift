@@ -374,8 +374,11 @@ final class IsochronousTests: XCTestCase {
       completed = true
     }
     weak var allocation = pipe.lists.first
+    queue!.reset() // Closing a generation must not release native DMA memory.
     pipe.lists.removeAll(); queue = nil
     XCTAssertNotNil(allocation)
+    allocation?.data.mutableBytes.storeBytes(of: UInt8(0xab), as: UInt8.self)
+    allocation?.pointer[0].completeCount = 0
     pipe.completions[0](kIOReturnAborted)
     XCTAssertTrue(completed)
     pipe.completions.removeAll()

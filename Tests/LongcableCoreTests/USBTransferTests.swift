@@ -34,6 +34,7 @@ final class FakeUSBTransport: USBTransferTransport {
   var resetError: Error?
   var selectionFailures = [Bool]()
   var selectionAttempts = [UInt8]()
+  var onSelect: (() -> Void)?
   var alternateSupport: ((UInt8, UInt8) -> Bool)?
   var types: [UInt8: UInt8] = [1: 2, 2: 2, 0x81: 2, 0x82: 3]
   var packetSize = 4
@@ -62,6 +63,7 @@ final class FakeUSBTransport: USBTransferTransport {
   }
   func selectInterface(_ number: UInt8, alternate: UInt8) throws -> Bool {
     guard number <= 1 else { return false }
+    onSelect?()
     selectionAttempts.append(alternate)
     if !selectionFailures.isEmpty && selectionFailures.removeFirst() {
       throw USBError.message("Native alternate selection failed")
@@ -94,7 +96,8 @@ final class FakeUSBTransport: USBTransferTransport {
 }
 
 final class USBTransferTests: XCTestCase {
-  private func fixture() throws -> (Session, Connection, FakeUSBTransport) {
+  private func fixture(now: @escaping () -> Int64 = monotonicMS,
+    log: @escaping (String) -> Void = { EventLog.shared.write($0) }) throws -> (Session, Connection, FakeUSBTransport) {
     var fds: [Int32] = [0, 0]
     guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { throw USBError.message("socketpair") }
     let server = Connection(fds[0]), peer = Connection(fds[1])
@@ -104,7 +107,7 @@ final class USBTransferTests: XCTestCase {
     target.identity = Identity(record: Data(count: 312), classes: Data(), configuration: 1,
       overlaySerial: false, name: "Test", serial: "Test")
     let transport = FakeUSBTransport()
-    return (Session(target, server, transport: transport), peer, transport)
+    return (Session(target, server, transport: transport, now: now, log: log), peer, transport)
   }
   private func header(_ seq: UInt32, endpoint: UInt32 = 1, direction: UInt32 = 1,
     length: UInt32 = 4, flags: UInt32 = 0) -> Data {
@@ -386,23 +389,22 @@ final class USBTransferTests: XCTestCase {
       default: reset[40] = 2; reset[41] = 1; reset[44] = 1
       }
       XCTAssertTrue(try session.submit(reset))
-      for seq: UInt32 in 2...3 {
+      var cancelled = Set<UInt32>()
+      for _ in 0..<(operation == "configuration" ? 4 : 3) {
         let aborted = try XCTUnwrap(peer.read(48))
-        XCTAssertEqual(aborted.u32(4), seq)
+        cancelled.insert(aborted.u32(4))
         XCTAssertEqual(Int32(bitPattern: aborted.u32(20)), -104)
       }
+      XCTAssertEqual(cancelled, operation == "configuration" ? [1,2,3,4] : [1,2,3])
       XCTAssertEqual(peer.read(48)?.u32(4), 10)
-      XCTAssertEqual(session.outstandingCount, 2, "Native callbacks must still own their budget")
-      // Model successful native callbacks already posted before the reset, which
-      // reach Session only after pipes have been rebuilt/cleared.
+      XCTAssertEqual(session.outstandingCount, operation == "configuration" ? 0 : 1)
+      // A successful old callback cannot append a ZLP or reply again.
       finish(0, transport, session)
-      let old = try XCTUnwrap(peer.read(48))
-      XCTAssertEqual(old.u32(4), 1)
-      XCTAssertEqual(Int32(bitPattern: old.u32(20)), -104)
-      XCTAssertEqual(transport.submissions.count, 2, "No old ZLP or queued OUT may reach a reset pipe")
+      XCTAssertNil(peer.read(1, timeoutMS: 20))
+      XCTAssertEqual(transport.submissions.count, 2)
       finish(1, transport, session)
       if operation == "configuration" {
-        XCTAssertEqual(Int32(bitPattern: try XCTUnwrap(peer.read(48)).u32(20)), -104)
+        XCTAssertNil(peer.read(1, timeoutMS: 20))
         XCTAssertEqual(transport.submissions.count, 2)
       } else {
         XCTAssertEqual(transport.submissions.count, 3, "Unrelated interface retains normal ZLP semantics")
@@ -518,12 +520,12 @@ final class USBTransferTests: XCTestCase {
     XCTAssertEqual(IsoPacket.decode(try XCTUnwrap(peer.read(32)), count: 2, bufferLength: 12)?.map(\.actualLength), [4, 4])
     XCTAssertNil(peer.read(1, timeoutMS: 20))
   }
-  func testIsoUnlinkRetainsNativeBufferAndSuppressesSubmitReply() throws {
+  func testIsoUnlinkRetiresAbortedGenerationAndSuppressesSubmitReply() throws {
     let (session, peer, transport) = try fixture()
     try selectAlternate(session, peer)
     try submitIso(session, peer)
     try unlink(1, session: session, peer: peer)
-    XCTAssertEqual(transport.aborts, [0x83]); XCTAssertEqual(session.outstandingBytes, 12)
+    XCTAssertEqual(transport.aborts, [0x83]); XCTAssertEqual(session.outstandingBytes, 0)
     completeIso(0, transport, session, result: kIOReturnAborted)
     XCTAssertEqual(session.outstandingBytes, 0)
     XCTAssertNil(peer.read(1, timeoutMS: 20))
@@ -544,14 +546,148 @@ final class USBTransferTests: XCTestCase {
     let (session, peer, transport) = try fixture()
     try selectAlternate(session, peer)
     try submitIso(session, peer)
-    try selectAlternate(session, peer, seq: 101, alternate: 0)
-    completeIso(0, transport, session, result: kIOReturnAborted)
+    var reset = header(101, endpoint: 0, direction: 0, length: 0)
+    reset[40] = 1; reset[41] = 11; reset[44] = 1
+    XCTAssertTrue(try session.submit(reset))
     XCTAssertEqual(Int32(bitPattern: try XCTUnwrap(peer.read(48)).u32(20)), -104)
     XCTAssertNotNil(peer.read(32))
+    XCTAssertEqual(peer.read(48)?.u32(4), 101)
+    completeIso(0, transport, session, result: kIOReturnAborted)
+    XCTAssertNil(peer.read(1, timeoutMS: 20))
     XCTAssertTrue(try session.submit(header(2)))
     finish(0, transport, session)
     XCTAssertEqual(peer.read(48)?.u32(20), 0); XCTAssertNotNil(peer.read(4))
   }
+  func testRepeatedIsoAlternateSwitchStartsFreshINWithoutOldNativeCompletion() throws {
+    // Callback timing: absent, late success, abort before selection, inline in
+    // selection, and abort after selection. Two generations reuse the address.
+    for timing in ["never", "late", "before", "inline", "after"] {
+      let (session, peer, transport) = try fixture()
+      try selectAlternate(session, peer)
+      for seq: UInt32 in 1...10 { try submitIso(session, peer, seq: seq) }
+      try unlink(2, session: session, peer: peer)
+      if timing == "before" { completeIso(0, transport, session, result: kIOReturnAborted) }
+      if timing == "inline" {
+        transport.onSelect = { transport.isoSubmissions[0].completion(kIOReturnAborted, 0, []) }
+      }
+      var reset = header(101, endpoint: 0, direction: 0, length: 0)
+      reset[40] = 1; reset[41] = 11; reset[42] = 1; reset[44] = 1
+      XCTAssertTrue(try session.submit(reset))
+      transport.onSelect = nil
+      session.synchronize()
+      // Every wire request except the already unlinked one must finish now.
+      var seen = Set<UInt32>()
+      for _ in 0..<10 {
+        let reply = try XCTUnwrap(peer.read(48, timeoutMS: 100))
+        seen.insert(reply.u32(4))
+        if reply.u32(32) > 0 {
+          XCTAssertEqual(Int32(bitPattern: reply.u32(20)), -104)
+          XCTAssertEqual(reply.u32(24), 0)
+          XCTAssertNotNil(peer.read(32))
+        }
+      }
+      XCTAssertEqual(seen, Set([1,3,4,5,6,7,8,9,10,101]))
+      try submitIso(session, peer, seq: 1) // Sequence reuse must be fenced too.
+      XCTAssertEqual(transport.isoSubmissions.count, timing == "before" ? 10 : 9)
+      let middle = transport.isoSubmissions.count - 1
+      reset.put32(4, 102)
+      XCTAssertTrue(try session.submit(reset))
+      let cancelled = try XCTUnwrap(peer.read(48, timeoutMS: 100))
+      XCTAssertEqual(cancelled.u32(4), 1)
+      XCTAssertEqual(Int32(bitPattern: cancelled.u32(20)), -104)
+      XCTAssertNotNil(peer.read(32))
+      XCTAssertEqual(peer.read(48)?.u32(4), 102)
+      try submitIso(session, peer, seq: 1)
+      let fresh = transport.isoSubmissions.count - 1
+      XCTAssertGreaterThan(fresh, middle)
+      if timing != "never" {
+        for index in 0...middle {
+          completeIso(index, transport, session, result: timing == "late" ? kIOReturnSuccess : kIOReturnAborted)
+        }
+      }
+      let list = transport.isoSubmissions[fresh].list
+      list.data.mutableBytes.storeBytes(of: UInt8(0xab), as: UInt8.self)
+      list.pointer[0].status = kIOReturnSuccess; list.pointer[0].completeCount = 1
+      completeIso(fresh, transport, session)
+      let reply = try XCTUnwrap(peer.read(48, timeoutMS: 100))
+      XCTAssertEqual(reply.u32(4), 1); XCTAssertEqual(reply.u32(24), 1)
+      XCTAssertEqual(peer.read(1), Data([0xab])); XCTAssertNotNil(peer.read(32))
+      XCTAssertNil(peer.read(1, timeoutMS: 20))
+      XCTAssertEqual(session.outstandingCount, 0)
+    }
+  }
+
+  func testSingleIsoUnlinkAbortWithoutNativeCallbackAllowsFreshIN() throws {
+    let (session, peer, transport) = try fixture()
+    try selectAlternate(session, peer)
+    for seq: UInt32 in 1...9 {
+      try submitIso(session, peer, seq: seq)
+      try unlink(seq, session: session, peer: peer)
+    }
+    try submitIso(session, peer, seq: 10)
+    XCTAssertEqual(transport.isoSubmissions.count, 10)
+    guard transport.isoSubmissions.count == 10 else { return }
+    let list = transport.isoSubmissions[9].list
+    list.data.mutableBytes.storeBytes(of: UInt8(0xde), as: UInt8.self)
+    list.pointer[0].status = kIOReturnSuccess; list.pointer[0].completeCount = 1
+    completeIso(9, transport, session)
+    XCTAssertEqual(peer.read(48)?.u32(4), 10)
+    XCTAssertEqual(peer.read(1), Data([0xde])); XCTAssertNotNil(peer.read(32))
+    XCTAssertEqual(session.outstandingCount, 0)
+    for index in 0..<9 { completeIso(index, transport, session, result: kIOReturnAborted) }
+    XCTAssertNil(peer.read(1, timeoutMS: 20))
+    XCTAssertEqual(session.outstandingCount, 0)
+  }
+
+  func testIsoWatchdogLogsOncePerStallAndFencesOldGenerationCompletions() throws {
+    var clock: Int64 = 0
+    var logs = [String]()
+    let (session, peer, transport) = try fixture(now: { clock }, log: { logs.append($0) })
+    try selectAlternate(session, peer)
+    for seq: UInt32 in 1...10 { try submitIso(session, peer, seq: seq) }
+    clock = 2000; session.checkIsoWatchdog(); XCTAssertTrue(logs.isEmpty)
+    clock = 2001; session.checkIsoWatchdog()
+    XCTAssertEqual(logs.count, 1)
+    XCTAssertTrue(logs[0].contains("0x83")); XCTAssertTrue(logs[0].contains("generation 0"))
+    XCTAssertTrue(logs[0].contains("active 8 queued 2 pending 10"))
+    clock = 9000; session.checkIsoWatchdog(); XCTAssertEqual(logs.count, 1)
+    completeIso(0, transport, session)
+    XCTAssertNotNil(peer.read(48)); XCTAssertNotNil(peer.read(32))
+    clock = 11001; session.checkIsoWatchdog(); XCTAssertEqual(logs.count, 2)
+    var reset = header(101, endpoint: 0, direction: 0, length: 0)
+    reset[40] = 1; reset[41] = 11; reset[42] = 1; reset[44] = 1
+    XCTAssertTrue(try session.submit(reset))
+    for _ in 0..<9 { XCTAssertNotNil(peer.read(48)); XCTAssertNotNil(peer.read(32)) }
+    XCTAssertEqual(peer.read(48)?.u32(4), 101)
+    try submitIso(session, peer, seq: 20)
+    clock = 13002
+    completeIso(1, transport, session) // Old callback must not reset watchdog progress.
+    session.checkIsoWatchdog()
+    XCTAssertEqual(logs.count, 3); XCTAssertTrue(logs[2].contains("generation 1"))
+    XCTAssertTrue(logs[2].contains("active 1 queued 0 pending 1"))
+    session.shutdownTransfers()
+    clock = 20000; session.checkIsoWatchdog(); XCTAssertEqual(logs.count, 3)
+  }
+  func testReleasedSessionLateIsoCompletionCannotAffectReattachedSession() throws {
+    let (old, oldPeer, oldTransport) = try fixture()
+    try selectAlternate(old, oldPeer)
+    try submitIso(old, oldPeer)
+    old.shutdownTransfers()
+    let (fresh, peer, transport) = try fixture()
+    try selectAlternate(fresh, peer)
+    try submitIso(fresh, peer)
+    completeIso(0, oldTransport, old, result: kIOReturnNotResponding)
+    XCTAssertNil(oldPeer.read(1, timeoutMS: 20))
+    XCTAssertEqual(fresh.outstandingCount, 1)
+    let list = transport.isoSubmissions[0].list
+    list.data.mutableBytes.storeBytes(of: UInt8(0xcd), as: UInt8.self)
+    list.pointer[0].status = kIOReturnSuccess; list.pointer[0].completeCount = 1
+    completeIso(0, transport, fresh)
+    XCTAssertEqual(peer.read(48)?.u32(24), 1)
+    XCTAssertEqual(peer.read(1), Data([0xcd])); XCTAssertNotNil(peer.read(32))
+    XCTAssertEqual(fresh.outstandingCount, 0)
+  }
+
   func testMalformedIsoMetadataClosesSubmitWithoutNativeIO() throws {
     for count: UInt32 in [1025, 0xffff_fffe] {
       let (session, _, transport) = try fixture()
@@ -603,7 +739,7 @@ final class USBTransferTests: XCTestCase {
     var reset = header(101, endpoint: 0, direction: 0, length: 0)
     reset[40] = 1; reset[41] = 11; reset[44] = 1
     XCTAssertTrue(try session.submit(reset))
-    for seq: UInt32 in 9...10 {
+    for seq: UInt32 in 1...10 {
       let cancelled = try XCTUnwrap(peer.read(48))
       XCTAssertEqual(cancelled.u32(4), seq)
       XCTAssertEqual(Int32(bitPattern: cancelled.u32(20)), -104)
@@ -614,8 +750,7 @@ final class USBTransferTests: XCTestCase {
       let request = transport.isoSubmissions[index]
       for i in 0..<2 { request.list.pointer[i].status = kIOReturnSuccess }
       completeIso(index, transport, session)
-      let reply = try XCTUnwrap(peer.read(48))
-      XCTAssertEqual(Int32(bitPattern: reply.u32(20)), -104); XCTAssertNotNil(peer.read(32))
+      XCTAssertNil(peer.read(1, timeoutMS: 20))
     }
     XCTAssertEqual(transport.isoSubmissions.count, 8)
     XCTAssertEqual(session.outstandingCount, 0)
