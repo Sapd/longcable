@@ -149,11 +149,14 @@ func loadIdentity(_ config: TargetConfig, busID: String, wireID: UInt32) throws 
 final class CapturedDevice: USBTransferTransport {
   var device: IOUSBHostDevice?
   var interfaces = [IOUSBHostInterface]()
-  var pipes = [UInt8: IOUSBHostPipe]()
-  var types = [UInt8: UInt8]()
-  private var packetSizes = [UInt8: Int]()
+  private struct NativePipe {
+    let pipe: IOUSBHostPipe
+    let iso: IsoPipeQueue?
+  }
+  private let pipeMap = InterfacePipeMap<NativePipe>()
+  private var highSpeed = false
+  private var superSpeed = false
   private var interfaceByNumber = [UInt8: IOUSBHostInterface]()
-  private var endpointsByInterface = [UInt8: Set<UInt8>]()
   var location: UInt32 = 0
   var disconnected: (() -> Void)?
   let queue = DispatchQueue(label: "org.sapd.longcable.usb.callbacks")
@@ -170,6 +173,8 @@ final class CapturedDevice: USBTransferTransport {
       }
     }
     location = number(service, "locationID")
+    highSpeed = number(service, "Device Speed") >= 2
+    superSpeed = number(service, "Device Speed") >= 3
     try guarded {
       device = try IOUSBHostDevice(
         __ioService: service, options: .deviceCapture, queue: queue,
@@ -214,78 +219,53 @@ final class CapturedDevice: USBTransferTransport {
       let number = interface.interfaceDescriptor.pointee.bInterfaceNumber
       guard interfaceByNumber[number] == nil else { throw USBError.message("Duplicate interface") }
       interfaceByNumber[number] = interface
-      try openPipes(interface)
+      try openPipes(interface, alternate: interface.interfaceDescriptor.pointee.bAlternateSetting)
     }
     guard let config = device.configurationDescriptor, !interfaces.isEmpty,
       interfaces.count == Int(config.pointee.bNumInterfaces)
     else { throw USBError.message("Incomplete interfaces") }
   }
-  private func openPipes(_ interface: IOUSBHostInterface) throws {
-    let descriptor = interface.interfaceDescriptor
+  private func openPipes(_ interface: IOUSBHostInterface, alternate: UInt8,
+    selecting: Bool = false) throws {
+    let number = interface.interfaceDescriptor.pointee.bInterfaceNumber
     let config = interface.configurationDescriptor
-    let start = UnsafeRawPointer(descriptor)
-    let base = UnsafeRawPointer(config)
-    let total = Int(UInt16(littleEndian: config.pointee.wTotalLength))
-    let offset = base.distance(to: start)
-    guard offset >= 0 && offset + 9 <= total && descriptor.pointee.bLength >= 9 else {
-      throw USBError.message("Invalid interface descriptor")
-    }
-    let bytes = Data(bytes: base, count: total)
-    var selectedPipes = [UInt8: IOUSBHostPipe]()
-    var selectedTypes = [UInt8: UInt8]()
-    var selectedPacketSizes = [UInt8: Int]()
-    var i = offset + Int(descriptor.pointee.bLength)
-    while i + 2 <= total && bytes[i] >= 2 && i + Int(bytes[i]) <= total && bytes[i + 1] != 4 {
-      if bytes[i + 1] == 5 && bytes[i] >= 7 {
-        let address = bytes[i + 2]
-        let type = bytes[i + 3] & 3
-        if type == 2 || type == 3 {
-          selectedPipes[address] = try interface.copyPipe(withAddress: Int(address))
-          selectedTypes[address] = type
-          selectedPacketSizes[address] = Int(bytes.u16LE(i + 4) & 0x7ff)
-        } else if type == 1 {
-          throw USBError.message("Isochronous transfers are not supported")
+    let bytes = descriptorData(config, Int(UInt16(littleEndian: config.pointee.wTotalLength)))
+    try pipeMap.replace(number: number, alternate: alternate, configuration: bytes, highSpeed: highSpeed,
+      select: { if selecting { try interface.selectAlternateSetting(Int(alternate)) } },
+      open: { endpoint in
+        let pipe = try interface.copyPipe(withAddress: Int(endpoint.address))
+        var iso: IsoPipeQueue?
+        if let interval = endpoint.isoInterval, let device, !superSpeed {
+          iso = IsoPipeQueue(pipe: pipe, highSpeed: highSpeed, interval: interval,
+            maximumPayload: endpoint.maximumPayload, currentFrame: { device.__frameNumber(withTime: nil) })
         }
-      }
-      i += Int(bytes[i])
-    }
-    for (address, pipe) in selectedPipes {
-      pipes[address] = pipe
-      types[address] = selectedTypes[address]
-      packetSizes[address] = selectedPacketSizes[address]
-    }
-    endpointsByInterface[descriptor.pointee.bInterfaceNumber] = Set(selectedPipes.keys)
+        return NativePipe(pipe: pipe, iso: iso)
+      })
   }
-  func endpointsForInterface(_ number: UInt8) -> Set<UInt8>? {
-    guard interfaceByNumber[number] != nil else { return nil }
-    return endpointsByInterface[number] ?? []
-  }
-  func selectInterface(_ number: UInt8) throws -> Bool {
+  func endpointsForInterface(_ number: UInt8) -> Set<UInt8>? { pipeMap.endpoints(number) }
+  func currentAlternate(_ number: UInt8) -> UInt8? { pipeMap.alternates[number] }
+  func supportsAlternate(_ number: UInt8, alternate: UInt8) -> Bool {
     guard let interface = interfaceByNumber[number] else { return false }
-    // Selecting even the current alternate resets this interface's endpoint state.
-    // The SDK aborts/closes only this interface's old pipes; other interfaces stay live.
-    try guarded { try interface.selectAlternateSetting(0) }
-    for address in endpointsByInterface[number] ?? [] {
-      pipes.removeValue(forKey: address)
-      types.removeValue(forKey: address)
-      packetSizes.removeValue(forKey: address)
-    }
-    endpointsByInterface.removeValue(forKey: number)
-    try guarded { try openPipes(interface) }
+    let config = interface.configurationDescriptor
+    return interfaceEndpoints(descriptorData(config, Int(UInt16(littleEndian: config.pointee.wTotalLength))),
+      number: number, alternate: alternate, highSpeed: highSpeed) != nil
+  }
+  func selectInterface(_ number: UInt8, alternate: UInt8) throws -> Bool {
+    guard let interface = interfaceByNumber[number], supportsAlternate(number, alternate: alternate) else { return false }
+    // Native selection aborts/closes old pipes on only this interface.
+    try guarded { try openPipes(interface, alternate: alternate, selecting: true) }
     return true
   }
   private func clearInterfaces() {
-    for pipe in pipes.values { try? guarded { try pipe.__abort(with: .synchronous) } }
+    for binding in pipeMap.pipes.values { try? guarded { try binding.pipe.__abort(with: .synchronous) } }
     for interface in interfaces { try? guarded { interface.destroy() } }
-    pipes.removeAll()
-    types.removeAll()
-    packetSizes.removeAll()
+    pipeMap.removeAll()
     interfaces.removeAll()
     interfaceByNumber.removeAll()
-    endpointsByInterface.removeAll()
   }
-  func endpointType(_ address: UInt8) -> UInt8? { types[address] }
-  func maximumPacketSize(_ address: UInt8) -> Int? { packetSizes[address] }
+  func endpointType(_ address: UInt8) -> UInt8? { pipeMap.descriptors[address]?.type }
+  func maximumPacketSize(_ address: UInt8) -> Int? { pipeMap.descriptors[address]?.maximumPayload }
+
   func enqueueControl(_ request: IOUSBDeviceRequest, data: NSMutableData,
     completion: @escaping (IOReturn, Int) -> Void) throws {
     guard let device else { throw USBError.message("No capture") }
@@ -296,23 +276,35 @@ final class CapturedDevice: USBTransferTransport {
   }
   func enqueueIO(_ address: UInt8, data: NSMutableData?, timeout: TimeInterval,
     completion: @escaping (IOReturn, Int) -> Void) throws {
-    guard let pipe = pipes[address] else { throw USBError.message("No endpoint") }
+    guard let pipe = pipeMap.pipes[address]?.pipe else { throw USBError.message("No endpoint") }
     try guarded {
       try pipe.enqueueIORequest(with: data, completionTimeout: timeout,
         completionHandler: { result, count in completion(result, Int(count)) })
     }
   }
+  func enqueueIso(_ address: UInt8, data: NSMutableData, packets: [IsoPacket],
+    startFrame: UInt32, interval: UInt32, asap: Bool,
+    completion: @escaping (IOReturn, UInt32, [IsoPacket]) -> Void) throws {
+    // USB 3 companion-descriptor burst sizing is not implemented yet. Do not
+    // issue incorrectly sized native transfers for SuperSpeed iso endpoints.
+    guard let queue = pipeMap.pipes[address]?.iso else {
+      throw NSError(domain: "IOUSBHost", code: Int(kIOReturnUnsupported))
+    }
+    try queue.enqueue(data: data, packets: packets, startFrame: startFrame,
+      requestedInterval: interval, asap: asap, completion: completion)
+  }
   func abort(_ address: UInt8) throws {
+    pipeMap.pipes[address]?.iso?.reset()
     if address == 0 {
       guard let device else { throw USBError.message("No capture") }
       try guarded { try device.__abortDeviceRequests(with: .synchronous) }
     } else {
-      guard let pipe = pipes[address] else { throw USBError.message("No endpoint") }
+      guard let pipe = pipeMap.pipes[address]?.pipe else { throw USBError.message("No endpoint") }
       try guarded { try pipe.__abort(with: .synchronous) }
     }
   }
   func clearHalt(_ address: UInt8) throws {
-    guard let pipe = pipes[address] else { throw USBError.message("No endpoint") }
+    guard let pipe = pipeMap.pipes[address]?.pipe else { throw USBError.message("No endpoint") }
     try guarded { try pipe.clearStall() }
   }
   func release() {

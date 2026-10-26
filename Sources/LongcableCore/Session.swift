@@ -19,13 +19,22 @@ protocol USBTransferTransport: AnyObject {
   func abort(_ address: UInt8) throws
   func clearHalt(_ address: UInt8) throws
   func reconfigure(_ configuration: UInt8) throws
-  func selectInterface(_ number: UInt8) throws -> Bool
+  func selectInterface(_ number: UInt8, alternate: UInt8) throws -> Bool
+  func currentAlternate(_ number: UInt8) -> UInt8?
+  func supportsAlternate(_ number: UInt8, alternate: UInt8) -> Bool
+  func enqueueIso(_ address: UInt8, data: NSMutableData, packets: [IsoPacket],
+    startFrame: UInt32, interval: UInt32, asap: Bool,
+    completion: @escaping (IOReturn, UInt32, [IsoPacket]) -> Void) throws
   func endpointsForInterface(_ number: UInt8) -> Set<UInt8>?
 }
 
 final class Transfer {
   let seq: UInt32, direction: UInt32, endpoint: UInt32
   let data: NSMutableData
+  var isoPackets = [IsoPacket]()
+  var startFrame: UInt32 = 0
+  var interval: UInt32 = 0
+  var isoCompleted = false
   var deviceDescriptor = false
   var flags: UInt32 = 0
   var request: IOUSBDeviceRequest?
@@ -50,7 +59,7 @@ final class Session {
   // pending tracks requests still owed a wire reply. active also retains cancelled
   // native requests, so UNLINK cannot release their count/buffer admission budget.
   var pending = [UInt32: Transfer]()
-  private var active = [UInt8: Transfer]()
+  private var active = [UInt8: [Transfer]]()
   private var queued = [UInt8: [Transfer]]()
   var closed = false
   private var transportBroken = false
@@ -67,7 +76,7 @@ final class Session {
   // A queue fence also makes fake native callbacks deterministic in regression tests.
   func synchronize() { serialized {} }
   private var retainedJobs: [Transfer] {
-    Array(pending.values) + active.values.filter { pending[$0.seq] !== $0 }
+    Array(pending.values) + active.values.flatMap { $0 }.filter { pending[$0.seq] !== $0 }
   }
   var outstandingCount: Int { serialized { retainedJobs.count } }
   var outstandingBytes: Int { serialized { retainedJobs.reduce(0) { $0 + $1.data.length } } }
@@ -76,19 +85,28 @@ final class Session {
     serialized { finish(job, result: result, bytes: bytes) }
   }
   private func finish(_ job: Transfer, result: IOReturn, bytes: Int, statusOverride: Int32? = nil) {
-    if active[job.address] === job { active.removeValue(forKey: job.address) }
+    active[job.address]?.removeAll { $0 === job }
+    if active[job.address]?.isEmpty == true { active.removeValue(forKey: job.address) }
     defer { startNext(job.address) }
     guard !closed, pending[job.seq] === job else { return }
     pending.removeValue(forKey: job.seq)
-    let count = min(max(0, bytes), job.data.length)
+    if !job.isoPackets.isEmpty && !job.isoCompleted {
+      let status = statusOverride ?? usbStatus(result)
+      job.isoPackets = job.isoPackets.map {
+        IsoPacket(offset: $0.offset, length: $0.length, status: status == 0 ? -18 : status)
+      }
+    }
+    let count = job.isoPackets.isEmpty ? min(max(0, bytes), job.data.length)
+      : job.isoPackets.reduce(0) { $0 + Int($1.actualLength) }
     if (result == kIOReturnSuccess || (result == kIOReturnUnderrun && count < job.expectedLength))
       && job.deviceDescriptor
       && target.identity?.overlaySerial == true && count >= 17 {
       job.data.mutableBytes.storeBytes(of: UInt8(254), toByteOffset: 16, as: UInt8.self)
     }
-    let shortTransfer = job.direction == 1 && count < job.expectedLength
+    let shortTransfer = job.isoPackets.isEmpty && job.direction == 1 && count < job.expectedLength
       && (result == kIOReturnSuccess || result == kIOReturnUnderrun)
-    let status = statusOverride ?? (shortTransfer ? (job.flags & 1 != 0 ? -121 : 0) : usbStatus(result))
+    let status = statusOverride ?? (shortTransfer ? (job.flags & 1 != 0 ? -121 : 0)
+      : (!job.isoPackets.isEmpty && result == kIOReturnUnderrun ? 0 : usbStatus(result)))
     var header = Data(count: 48)
     header.put32(0, 3)
     header.put32(4, job.seq)
@@ -97,10 +115,24 @@ final class Session {
     header.put32(16, job.endpoint)
     header.put32(20, UInt32(bitPattern: status))
     header.put32(24, UInt32(count))
+    if !job.isoPackets.isEmpty {
+      header.put32(28, job.startFrame)
+      header.put32(32, UInt32(job.isoPackets.count))
+      header.put32(36, UInt32(job.isoPackets.filter { $0.status != 0 }.count))
+    }
     var ok = connection.write(header)
     if ok && job.direction == 1 && count > 0 {
-      ok = connection.write(Data(bytes: job.data.bytes, count: count))
+      if job.isoPackets.isEmpty {
+        ok = connection.write(Data(bytes: job.data.bytes, count: count))
+      } else {
+        var packed = Data()
+        for p in job.isoPackets where p.actualLength > 0 {
+          packed.append(Data(bytes: job.data.bytes.advanced(by: Int(p.offset)), count: Int(p.actualLength)))
+        }
+        ok = connection.write(packed)
+      }
     }
+    if ok && !job.isoPackets.isEmpty { ok = connection.write(IsoPacket.encode(job.isoPackets)) }
     target.transfer(count, status: status, pending: pending.count, native: result)
     if !ok || result == kIOReturnNoDevice || result == kIOReturnNotAttached {
       transportBroken = true
@@ -117,7 +149,7 @@ final class Session {
     }
   }
   private func nativeCompleted(_ job: Transfer, result: IOReturn, bytes: Int) {
-    guard active[job.address] === job else { return }
+    guard active[job.address]?.contains(where: { $0 === job }) == true else { return }
     // A successful callback can have been posted before a reset but processed
     // afterwards. It must never append a ZLP to the replacement pipe generation.
     if job.resetAborted {
@@ -145,7 +177,7 @@ final class Session {
   private func invalidateEndpoints(_ addresses: Set<UInt8>) {
     var discarded = [Transfer]()
     for address in addresses {
-      active[address]?.resetAborted = true
+      active[address]?.forEach { $0.resetAborted = true }
       discarded += queued.removeValue(forKey: address) ?? []
     }
     // Remove every affected queue before finishing any item; finish() may start
@@ -153,12 +185,16 @@ final class Session {
     for job in discarded { finish(job, result: kIOReturnAborted, bytes: 0) }
   }
   func submit(_ h: Data) throws -> Bool {
+    guard h.count == 48 else { return false }
     let seq = h.u32(4), direction = h.u32(12), ep = h.u32(16), length = h.u32(24)
     let packets = h.u32(32)
     guard h.u32(8) == target.wireID, direction <= 1, ep <= 15, length <= 1_048_576,
-      packets == 0 || packets == UInt32.max else { return false }
+      (packets <= IsoPacket.limit || packets == UInt32.max),
+      ep != 0 || packets == 0 || packets == UInt32.max else { return false }
     let job = Transfer(seq: seq, direction: direction, endpoint: ep, length: Int(length))
     job.flags = h.u32(20)
+    job.startFrame = h.u32(28)
+    job.interval = h.u32(36)
     if ep == 0 {
       let setup = Data(h[40..<48])
       var request = IOUSBDeviceRequest()
@@ -176,6 +212,12 @@ final class Session {
       guard let body = connection.read(Int(length)) else { return false }
       body.copyBytes(to: job.data.mutableBytes.assumingMemoryBound(to: UInt8.self), count: body.count)
     }
+    if packets > 0 && packets != UInt32.max {
+      guard let descriptors = connection.read(Int(packets) * 16),
+        let decoded = IsoPacket.decode(descriptors, count: Int(packets), bufferLength: Int(length))
+      else { return false }
+      job.isoPackets = decoded.map { IsoPacket(offset: $0.offset, length: $0.length) }
+    }
     return serialized {
       let retained = retainedJobs
       guard !closed, !transportBroken, retained.count < 64, pending[seq] == nil,
@@ -188,16 +230,24 @@ final class Session {
     }
   }
   private func startNext(_ address: UInt8) {
-    guard !closed, !transportBroken, active[address] == nil,
-      var jobs = queued[address], !jobs.isEmpty else { return }
+    guard !closed, !transportBroken,
+      var jobs = queued[address], let first = jobs.first else { return }
+    let running = active[address] ?? []
+    // Iso streams need multiple URBs on the controller to avoid a TCP round-trip
+    // between consecutive frame lists. Bulk/control/interrupt stay serialized.
+    guard running.isEmpty || (!first.isoPackets.isEmpty && running.count < 8
+      && running.allSatisfy { !$0.isoPackets.isEmpty && !$0.resetAborted }) else { return }
     let job = jobs.removeFirst()
     queued[address] = jobs
     guard pending[job.seq] === job else { startNext(address); return }
-    active[address] = job
+    active[address, default: []].append(job)
     // DMA allocation, buffer ownership and callback scheduling flags are host-local
-    // metadata. ISO_ASAP and unknown transfer semantics are explicitly unsupported.
-    let supportedFlags: UInt32 = 0x1 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200
+    // metadata. ISO_ASAP is meaningful only for an isochronous pipe.
+    let supportedFlags: UInt32 = 0x1 | 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200
+    let isIso = !job.isoPackets.isEmpty
     guard job.flags & ~supportedFlags == 0,
+      job.flags & 2 == 0 || isIso,
+      isIso == (transport.endpointType(address) == 1),
       job.flags & 0x40 == 0 || (job.endpoint != 0 && job.direction == 0
         && transport.endpointType(address) == 2 && (transport.maximumPacketSize(address) ?? 0) > 0)
     else { finish(job, result: kIOReturnUnsupported, bytes: 0, statusOverride: -95); return }
@@ -227,7 +277,8 @@ final class Session {
             connection.interrupt()
           }
         } else if request.bmRequestType == 1 && request.bRequest == 11 {
-          guard request.wValue == 0, request.wIndex <= 255, request.wLength == 0 else {
+          guard request.wValue <= 255, request.wIndex <= 255, request.wLength == 0,
+            transport.supportsAlternate(UInt8(request.wIndex), alternate: UInt8(request.wValue)) else {
             finish(job, result: pipeStalled, bytes: 0); return
           }
           guard let endpoints = transport.endpointsForInterface(UInt8(request.wIndex)) else {
@@ -235,13 +286,20 @@ final class Session {
           }
           do {
             invalidateEndpoints(endpoints)
-            let selected = try transport.selectInterface(UInt8(request.wIndex))
+            let selected = try transport.selectInterface(UInt8(request.wIndex), alternate: UInt8(request.wValue))
             finish(job, result: selected ? kIOReturnSuccess : pipeStalled, bytes: 0)
           } catch {
             transportBroken = true
             finish(job, result: nativeError(error), bytes: 0)
             connection.interrupt()
           }
+        } else if request.bmRequestType == 0x81 && request.bRequest == 10 {
+          guard request.wValue == 0, request.wIndex <= 255, request.wLength == 1,
+            let alternate = transport.currentAlternate(UInt8(request.wIndex)) else {
+            finish(job, result: pipeStalled, bytes: 0); return
+          }
+          job.data.mutableBytes.storeBytes(of: alternate, as: UInt8.self)
+          finish(job, result: kIOReturnSuccess, bytes: 1)
         } else if request.bmRequestType == 2 && request.bRequest == 1
           && request.wValue == 0 && request.wLength == 0 {
           guard request.wIndex <= 255, transport.endpointType(UInt8(request.wIndex)) != nil else {
@@ -256,6 +314,21 @@ final class Session {
       } else {
         guard transport.endpointType(address) != nil else {
           finish(job, result: pipeStalled, bytes: 0); return
+        }
+        if isIso {
+          try transport.enqueueIso(address, data: job.data, packets: job.isoPackets,
+            startFrame: job.startFrame, interval: job.interval, asap: job.flags & 2 != 0) {
+              [weak self, job] result, frame, packets in
+              self?.operations.async { [weak self, job] in
+                guard let self, self.active[job.address]?.contains(where: { $0 === job }) == true else { return }
+                job.startFrame = frame
+                job.isoPackets = packets
+                job.isoCompleted = true
+                self.nativeCompleted(job, result: result, bytes: 0)
+              }
+            }
+          startNext(address)
+          return
         }
         // Bulk reads may wait indefinitely for legitimate device data, like interrupts.
         try transport.enqueueIO(address, data: job.data.length == 0 ? nil : job.data,
@@ -275,7 +348,12 @@ final class Session {
       if !connection.write(reply) { connection.interrupt() }
       target.queued(pending.count)
       guard let job else { return }
-      if active[job.address] === job {
+      if active[job.address]?.contains(where: { $0 === job }) == true {
+        // IOUSBHost exposes pipe-wide abort only. If other iso URBs share this
+        // pipe, cancel this wire request logically and retain its native memory
+        // until completion rather than aborting neighbouring stream packets.
+        // Already scheduled OUT packets may still reach the device after UNLINK.
+        if !job.isoPackets.isEmpty && (active[job.address]?.count ?? 0) > 1 { return }
         do { try transport.abort(job.address) }
         catch { transportBroken = true; connection.interrupt() }
       } else {

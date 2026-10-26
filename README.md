@@ -54,7 +54,7 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
-73 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+99 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
 filter, peer allowlists) and 16 installer checks in a sandbox without sudo.
 
 ## How it works
@@ -221,10 +221,12 @@ in `peers.json` and merged with the configured peers across restarts.
 
 ## Limitations
 
-- **No isochronous transfers.** Webcams, microphones, USB audio interfaces and headsets
-  won't work. Input devices like joysticks, eye trackers, controllers and keyboards
-  are fine.
-- **Alternate setting 0 only.** Devices that switch interface modes may fail.
+- **Isochronous transfers and alternate settings are EXPERIMENTAL**, supported but
+  not yet hardware-tested. USB/IP over TCP is sensitive to jitter: audio is realistic
+  on a LAN or direct Tailscale connection; webcams also need substantial bandwidth.
+  Full/high-speed USB is supported; USB 3 iso and high-speed URBs spanning fractional
+  milliseconds are currently rejected. Unlink on a shared iso pipe suppresses the
+  cancelled reply; already scheduled packets may finish.
 - **Identical devices without a serial number** are bound to their USB ports. Keep
   them in the same ports so each keeps its own identity and bus ID.
 - **Up to 16 devices**, 1 MiB per transfer.

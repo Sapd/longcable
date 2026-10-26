@@ -124,8 +124,45 @@ func usbStatus(_ result: IOReturn) -> Int32 {
   case kIOReturnSuccess: return 0
   case kIOReturnAborted: return -104
   case kIOReturnTimeout: return -110
+  case kIOReturnBadArgument: return -22
+  case kIOReturnUnsupported: return -95
   case kIOReturnNoDevice, kIOReturnNotAttached: return -19
   case IOReturn(bitPattern: 0xe000_404f), IOReturn(bitPattern: 0xe000_5000): return -32
   default: return -5
+  }
+}
+
+// USB/IP uses a bounded array after the OUT buffer (no submit data for IN).
+struct IsoPacket: Equatable {
+  static let limit = 1024
+  var offset: UInt32
+  var length: UInt32
+  var actualLength: UInt32 = 0
+  var status: Int32 = 0
+
+  static func decode(_ data: Data, count: Int, bufferLength: Int) -> [IsoPacket]? {
+    guard count > 0, count <= limit, data.count == count * 16,
+      bufferLength >= 0, bufferLength <= 1_048_576 else { return nil }
+    var packets = [IsoPacket]()
+    var end: UInt32 = 0
+    for i in 0..<count {
+      let pos = i * 16, offset = data.u32(i * 16), length = data.u32(i * 16 + 4)
+      // Ordered, nonoverlapping ranges also bound the sum of actual lengths.
+      guard offset >= end, offset <= bufferLength, length <= UInt32(bufferLength) - offset,
+        data.u32(pos + 8) <= length else { return nil }
+      packets.append(IsoPacket(offset: offset, length: length,
+        actualLength: data.u32(pos + 8), status: Int32(bitPattern: data.u32(pos + 12))))
+      end = offset + length
+    }
+    return packets
+  }
+  static func encode(_ packets: [IsoPacket]) -> Data {
+    var data = Data(count: packets.count * 16)
+    for (i, p) in packets.enumerated() {
+      data.put32(i * 16, p.offset); data.put32(i * 16 + 4, p.length)
+      data.put32(i * 16 + 8, p.actualLength)
+      data.put32(i * 16 + 12, UInt32(bitPattern: p.status))
+    }
+    return data
   }
 }
