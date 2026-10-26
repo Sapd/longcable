@@ -309,6 +309,9 @@ struct DeviceCard: View {
             Circle().fill(connected ? .green : .secondary).frame(width: 6, height: 6)
             Text(model.online ? device.state : "Waiting for sharing service").font(.caption).foregroundStyle(.secondary)
           }
+          if !connected, let error = device.lastError, error.hasPrefix("In use by") || error.hasPrefix("Another app") {
+            Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+          }
         }
         Spacer()
         Toggle(

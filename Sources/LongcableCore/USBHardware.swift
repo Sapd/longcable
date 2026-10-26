@@ -100,8 +100,20 @@ func loadIdentity(_ config: TargetConfig, busID: String, wireID: UInt32) throws 
     throw USBError.message("Could not identify the physical USB device")
   }
   return try guarded {
-    let device = try IOUSBHostDevice(
-      __ioService: service, options: [], queue: nil, interestHandler: nil)
+    // Audio and other class drivers can hold a device exclusively; the shared
+    // open then fails, so read the descriptors under capture like a session does.
+    let device: IOUSBHostDevice
+    do {
+      device = try IOUSBHostDevice(
+        __ioService: service, options: [], queue: nil, interestHandler: nil)
+    } catch let error as NSError where error.code == Int(kIOReturnExclusiveAccess) {
+      do {
+        device = try IOUSBHostDevice(
+          __ioService: service, options: .deviceCapture, queue: nil, interestHandler: nil)
+      } catch let capture as NSError where capture.code == Int(kIOReturnExclusiveAccess) {
+        throw USBError.message(exclusiveOwnerMessage(text(service, "UsbExclusiveOwner")))
+      }
+    }
     defer { device.destroy() }
     guard let d = device.deviceDescriptor else { throw USBError.message("No device descriptor") }
     let desc = descriptorData(d, 18)
@@ -367,4 +379,19 @@ public func discoverUSBDevices(allowedAppleDevices: [TargetConfig] = []) -> [Loc
         name: text(service, "USB Product Name"), serial: text(service, "USB Serial Number")))
   }
   return result.sorted { $0.location < $1.location }
+}
+
+// IOUSBHost records the holder as "pid 1234, AppName" for processes or a driver
+// class name. Only name what macOS reports; never guess an application.
+func exclusiveOwnerMessage(_ owner: String) -> String {
+  let trimmed = owner.trimmingCharacters(in: .whitespaces)
+  guard !trimmed.isEmpty else {
+    return "Another app or driver is using this device. Close it to share the device."
+  }
+  if trimmed.hasPrefix("pid "), let comma = trimmed.firstIndex(of: ",") {
+    let pid = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 4)..<comma]
+    let app = trimmed[trimmed.index(after: comma)...].trimmingCharacters(in: .whitespaces)
+    return "In use by \(app) (pid \(pid)). Close it to share this device."
+  }
+  return "In use by the macOS driver \(trimmed). Disconnect other apps using it, then try again."
 }

@@ -57,3 +57,17 @@ final class SafetyTests: XCTestCase {
     XCTAssertThrowsError(try DaemonConfig(arguments: ["invalid", "any"]))
   }
 }
+
+final class ExclusiveOwnerMessageTests: XCTestCase {
+  func testProcessOwnerIsNamed() {
+    XCTAssertEqual(exclusiveOwnerMessage("pid 4234, WaveLink"),
+      "In use by WaveLink (pid 4234). Close it to share this device.")
+  }
+  func testDriverOwnerIsNamed() {
+    XCTAssertTrue(exclusiveOwnerMessage("AppleUSBAudioDevice").contains("macOS driver AppleUSBAudioDevice"))
+  }
+  func testUnknownOwnerNamesNoApp() {
+    XCTAssertEqual(exclusiveOwnerMessage(""),
+      "Another app or driver is using this device. Close it to share the device.")
+  }
+}

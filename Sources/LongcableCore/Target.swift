@@ -115,7 +115,18 @@ final class Target {
         if enabled { state = "Waiting for Windows" }
       }
       return true
-    } catch { return false }
+    } catch {
+      // Without this the device silently never appears in the client's device list.
+      let message: String
+      if case USBError.message(let text) = error { message = text }
+      else { message = "Reading descriptors for \(busID) failed: \(error)" }
+      let first = stateLock.withLock { () -> Bool in
+        defer { lastError = message }
+        return lastError != message
+      }
+      if first { EventLog.shared.write(message) }
+      return false
+    }
   }
   func snapshot(present: Bool = true) -> DeviceStatus {
     let pinned = matchingConfig.portBound == true
