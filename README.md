@@ -1,7 +1,6 @@
 # Longcable
 
-A slim native macOS USB/IP server and SwiftUI menu-bar app, with a small PowerShell
-client for Windows. Uses IOUSBHost whole-device capture as **root**, with no custom
+A slim native macOS USB/IP server and SwiftUI menu-bar app. Uses IOUSBHost whole-device capture as **root**, with no custom
 kext, DriverKit extension or SIP changes. Capture removes the device from Mac apps
 until the remote session releases it. Compatible with usbip-win2 on Windows and
 Linux `usbip` clients (TCP 3240).
@@ -54,16 +53,20 @@ provides local controls. Changes require root or the signed-in console user.
 `sudo scripts/uninstall-mac.sh` stops Longcable and removes its binary, configuration,
 socket and logs. The app can be run from the checkout; no app bundle installer is included.
 
-Windows (administrator PowerShell; install usbip-win2 and its driver first):
+Windows: install the official [usbip-win2](https://github.com/vadimgrn/usbip-win2/releases)
+(signed drivers, CLI and a GUI), then in administrator PowerShell:
 
 ```powershell
-.\windows\longcable.ps1 check
-.\windows\longcable.ps1 list -Server 100.85.208.64
-.\windows\longcable.ps1 attach -Server 100.85.208.64 -Device 231d:0201
-.\windows\longcable.ps1 install-reconnect -Server 100.85.208.64
+$usbip = 'C:\Program Files\USBip\usbip.exe'
+& $usbip list -r 100.85.208.64
+& $usbip attach -r 100.85.208.64 -b 1-1 --receive-mode=low-latency
+& $usbip port --stash   # remember attached devices; reattached at every boot
 ```
 
-See [windows/README.md](windows/README.md) for detach and reconnect controls.
+No extra client is needed. Without `--once`, usbip-win2 keeps retrying after a dropped
+connection, and stashed devices come back after a reboot. Longcable keeps bus IDs stable
+across reconnects and Mac port changes, so stashed entries stay valid. Tested with
+usbip-win2 0.9.8.1: server restart (back after ~30 s), 30 s network drop, Windows reboot.
 On Linux, load `vhci-hcd`, then use `usbip list -r MAC_IP` and
 `sudo usbip attach -r MAC_IP -b 1-1`.
 
