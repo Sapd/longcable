@@ -35,6 +35,7 @@ My setup, all running through Longcable:
 | VKBsim Gladiator EVO **R** | `231d:0200` | right stick |
 | Tobii Eye Tracker 5 | `2104:0313` | head tracking |
 | Steam Controller puck | `28de:1304` | controller receiver |
+| Elgato Wave:3 | `0fd9:0070` | microphone (experimental isochronous support) |
 
 ## What has been tested
 
@@ -52,6 +53,7 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | Rebooting Windows | stashed devices came back by themselves |
 | Both usbip-win2 receive modes | work; low-latency is the one I use |
 | A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
+| Elgato Wave:3 microphone (experimental) | records on Windows and in Discord, no dropouts; 5× start/stop clean; after unplug/replug it needs **Reconnect** |
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
 99 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
@@ -221,12 +223,19 @@ in `peers.json` and merged with the configured peers across restarts.
 
 ## Limitations
 
-- **Isochronous transfers and alternate settings are EXPERIMENTAL**, supported but
-  not yet hardware-tested. USB/IP over TCP is sensitive to jitter: audio is realistic
-  on a LAN or direct Tailscale connection; webcams also need substantial bandwidth.
-  Full/high-speed USB is supported; USB 3 iso and high-speed URBs spanning fractional
-  milliseconds are currently rejected. Unlink on a shared iso pipe suppresses the
-  cancelled reply; already scheduled packets may finish.
+- **Isochronous transfers (USB audio) are EXPERIMENTAL.** Tested with an Elgato Wave:3
+  microphone on Windows: recording works, including in Discord, with no dropouts on
+  Tailscale, and repeated start/stop works. Webcams are untested.
+  - **Known issue:** after the microphone is unplugged and replugged, or the Longcable
+    service restarts, Windows reattaches it but records silence. **Workaround:** click
+    **Reconnect** on the device in the Longcable app (or run
+    `longcable-server --control reconnect 1-5` with its bus ID). It then works again.
+  - USB/IP over TCP is sensitive to jitter: audio is realistic on a LAN or a direct
+    Tailscale connection; webcams also need substantial bandwidth.
+  - Full- and high-speed USB only; USB 3 isochronous devices are rejected.
+- **Apps holding a device:** if another app (for example Wave Link for Elgato mics) has
+  the device open, the Longcable app names it ("In use by …") and sharing waits until
+  you close that app. Windows then attaches it by itself if the device is stashed.
 - **Identical devices without a serial number** are bound to their USB ports. Keep
   them in the same ports so each keeps its own identity and bus ID.
 - **Up to 16 devices**, 1 MiB per transfer.
