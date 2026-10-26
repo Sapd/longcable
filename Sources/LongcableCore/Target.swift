@@ -112,6 +112,10 @@ final class Target {
       stateLock.withLock {
         identity = value
         identityRegistryID = registryID
+        // The holding app was closed; drop the stale "In use by …" hint.
+        if lastError?.hasPrefix("In use by") == true || lastError?.hasPrefix("Another app") == true {
+          lastError = nil
+        }
         if enabled { state = "Waiting for Windows" }
       }
       return true
