@@ -20,26 +20,61 @@ func findDevice(_ config: TargetConfig) -> io_service_t? {
       kIOMainPortDefault, IOServiceMatching("IOUSBHostDevice"), &iterator) == KERN_SUCCESS
   else { return nil }
   defer { IOObjectRelease(iterator) }
-  var chosen: io_service_t?
+  var services = [io_service_t]()
+  var devices = [LocalUSBDevice]()
   while true {
-    let s = IOIteratorNext(iterator)
-    if s == 0 { break }
-    if config.matches(
-      vendor: number(s, "idVendor"), product: number(s, "idProduct"),
-      location: number(s, "locationID"))
-    {
-      if let previous = chosen {
-        IOObjectRelease(previous)
-        IOObjectRelease(s)
-        return nil
-      }
-      chosen = s
-    } else {
-      IOObjectRelease(s)
+    let service = IOIteratorNext(iterator)
+    if service == 0 { break }
+    services.append(service)
+    devices.append(LocalUSBDevice(
+      vendor: String(format: "%04x", number(service, "idVendor")),
+      product: String(format: "%04x", number(service, "idProduct")),
+      location: String(format: "%08x", number(service, "locationID")),
+      name: "", serial: text(service, "USB Serial Number")))
+  }
+  let resolved = resolvedTarget(config, configured: [config], devices: devices)
+  let matches = devices.indices.filter { resolved.matches(devices[$0]) }
+  let chosen = matches.count == 1 ? matches[0] : nil
+  for index in services.indices where index != chosen { IOObjectRelease(services[index]) }
+  return chosen.map { services[$0] }
+}
+
+extension TargetConfig {
+  func sameModel(_ device: LocalUSBDevice) -> Bool {
+    UInt16(device.vendor, radix: 16) == vendor && UInt16(device.product, radix: 16) == product
+  }
+  func matches(_ device: LocalUSBDevice) -> Bool {
+    guard let v = UInt32(device.vendor, radix: 16), let p = UInt32(device.product, radix: 16),
+      let l = UInt32(device.location, radix: 16) else { return false }
+    return matches(vendor: v, product: p, location: l, serial: device.serial)
+  }
+}
+
+// Resolve before every lookup, including cache validation and capture. Unknown
+// startup identities learn a serial only at their own port or from a unique model.
+func resolvedTarget(_ config: TargetConfig, configured: [TargetConfig],
+                    devices: [LocalUSBDevice]) -> TargetConfig {
+  var result = config
+  guard config.vendor != 0x05ac, !config.label.isEmpty else { return result }
+  let model = devices.filter { config.sameModel($0) }
+  let peers = configured.filter { $0.vendor == config.vendor && $0.product == config.product }
+  if result.hardwareSerial == nil && result.portBound != true {
+    let candidate = model.first { UInt32($0.location, radix: 16) == config.location }
+      ?? (model.count == 1 && peers.count == 1 ? model.first : nil)
+    if let candidate, !candidate.serial.isEmpty { result.hardwareSerial = candidate.serial }
+  }
+  let seriallessPeers = peers.filter { peer in
+    peer.hardwareSerial == nil && !model.contains {
+      UInt32($0.location, radix: 16) == peer.location && !$0.serial.isEmpty
     }
   }
-  return chosen
+  if result.hardwareSerial == nil &&
+      (model.filter { $0.serial.isEmpty }.count > 1 || seriallessPeers.count > 1) {
+    result.portBound = true
+  }
+  return result
 }
+
 func descriptorData<T>(_ pointer: UnsafePointer<T>, _ count: Int) -> Data {
   Data(bytes: pointer, count: count)
 }

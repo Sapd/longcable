@@ -7,7 +7,7 @@ import Foundation
 // and must retain that identity when named targets are appended later.
 private func validateTargetCatalog(_ items: [TargetConfig]) throws {
   guard items.count <= 16 else { throw USBError.message("The 16-device limit was reached") }
-  var locations = Set<UInt32>(), models = Set<String>(), labels = Set<String>()
+  var identities = Set<String>(), labels = Set<String>()
   for (index, item) in items.enumerated() {
     let validLabel = !item.label.isEmpty && item.label.count <= 32
       && item.label.utf8.allSatisfy {
@@ -16,8 +16,8 @@ private func validateTargetCatalog(_ items: [TargetConfig]) throws {
     guard validLabel || (index == 0 && item.label.isEmpty) else {
       throw USBError.message("Invalid identity label in saved device setup")
     }
-    let model = "\(item.vendor):\(item.product)"
-    guard locations.insert(item.location).inserted, models.insert(model).inserted,
+    let identity = "\(item.vendor):\(item.product):\(item.location)"
+    guard identities.insert(identity).inserted,
       item.label.isEmpty || labels.insert(item.label).inserted
     else { throw USBError.message("Ambiguous duplicate target in saved device setup") }
   }
@@ -95,18 +95,23 @@ func appendedDevice(_ device: LocalUSBDevice, to existing: [TargetConfig]) throw
   guard vendor != 0x05ac else {
     throw USBError.message("Apple devices require an explicit VID/PID/LOCATION startup configuration")
   }
-  guard !existing.contains(where: { $0.vendor == vendor && $0.product == product }) else {
-    throw USBError.message(
-      "This device model is already remembered. Use its existing sharing switch.")
+  guard !existing.contains(where: {
+    $0.vendor == vendor && $0.product == product && $0.location == location
+      || (!device.serial.isEmpty && $0.vendor == vendor && $0.product == product
+          && $0.hardwareSerial == device.serial)
+  }) else {
+    throw USBError.message("This device is already remembered. Use its existing sharing switch.")
   }
-  // Location is only a discovery hint for a named target. A vacated hint must not
-  // prevent adding a different model that is now plugged into that physical port.
-  let occupied = Set(existing.map { $0.location })
-  var hint = location
-  while occupied.contains(hint) { hint &+= 1 }
-  let label = String(format: "USB%04X%04X", vendor, product)
-  let result =
-    existing + [TargetConfig(vendor: vendor, product: product, location: hint, label: label)]
+  let baseLabel = String(format: "USB%04X%04X", vendor, product)
+  var label = baseLabel
+  var suffix = 2
+  while existing.contains(where: { $0.label == label }) {
+    label = baseLabel + String(suffix)
+    suffix += 1
+  }
+  let result = existing + [TargetConfig(vendor: vendor, product: product,
+    location: location, label: label,
+    hardwareSerial: device.serial.isEmpty ? nil : device.serial)]
   try validateSavedTargets(result, base: existing)
   return result
 }
@@ -128,16 +133,16 @@ func preserveStartupDevices(store: StorePaths) throws {
 func addingConnectedDevice(
   _ selected: LocalUSBDevice, inventory: [LocalUSBDevice], to existing: [TargetConfig]
 ) throws -> [TargetConfig] {
-  guard
-    inventory.contains(where: {
-      $0.vendor == selected.vendor && $0.product == selected.product
-        && $0.location == selected.location
-    }),
-    inventory.filter({ $0.vendor == selected.vendor && $0.product == selected.product }).count == 1
-  else {
-    throw USBError.message(
-      "Device disconnected or identical devices cannot be distinguished. Connect only one of this model."
-    )
+  guard let connected = inventory.first(where: {
+    $0.vendor == selected.vendor && $0.product == selected.product
+      && $0.location == selected.location
+  }) else {
+    throw USBError.message("Device disconnected. Plug it in before sharing it.")
   }
-  return try appendedDevice(selected, to: existing)
+  guard !existing.contains(where: {
+    resolvedTarget($0, configured: existing, devices: inventory).matches(connected)
+  }) else {
+    throw USBError.message("This device is already remembered. Use its existing sharing switch.")
+  }
+  return try appendedDevice(connected, to: existing)
 }

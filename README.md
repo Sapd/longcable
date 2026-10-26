@@ -52,7 +52,7 @@ Beyond these specific checks, it is in daily use: I play Star Citizen with it fo
 at a time.
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
-53 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+62 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
 filter, peer allowlists) and 8 installer checks in a sandbox without sudo.
 
 ## How it works
@@ -169,7 +169,8 @@ warning).
   (root or the signed-in console user).
 - Fixed devices can be given as extra `VID PID LOCATION LABEL` groups, e.g.
   `231d 0201 02131200 VKBLEFT0201`. Their order fixes the bus IDs. Devices without a
-  hardware serial number get the label as a stable software serial.
+  hardware serial number get the label as a stable software serial. Identical models
+  without serials use LOCATION to stay bound to their USB ports.
 - Apple's built-in devices (vendor `05ac`) are hidden, so you can't accidentally share
   your MacBook's keyboard or trackpad.
 - Preview the install without sudo: `scripts/install-mac.sh --dry-run 0.0.0.0 192.168.1.20`.
@@ -185,8 +186,8 @@ warning).
   won't work. Input devices like joysticks, eye trackers, controllers and keyboards
   are fine.
 - **Alternate setting 0 only.** Devices that switch interface modes may fail.
-- **Identical devices without a serial number:** two units of the same model (same
-  VID:PID, no serial) can't be shared at the same time.
+- **Identical devices without a serial number** are bound to their USB ports. Keep
+  them in the same ports so each keeps its own identity and bus ID.
 - **Up to 16 devices**, 1 MiB per transfer.
 - **Shared devices disappear from the Mac** while a client is attached. That's how
   device capture works.

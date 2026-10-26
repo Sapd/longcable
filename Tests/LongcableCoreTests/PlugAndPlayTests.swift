@@ -18,17 +18,17 @@ final class PlugAndPlayTests: XCTestCase {
     XCTAssertEqual(result[0], first)
     XCTAssertEqual(result.count, 2)
     XCTAssertEqual(result[1].label, "USB21040313")
-    XCTAssertTrue(result[1].matches(vendor: 0x2104, product: 0x0313, location: 999))
+    XCTAssertTrue(result[1].matches(vendor: 0x2104, product: 0x0313, location: 999, serial: "serial"))
     XCTAssertEqual(Target(result[0], slot: 0).busID, "1-1")
     XCTAssertEqual(Target(result[1], slot: 1).busID, "1-2")
   }
-  func testUnpluggedAndAmbiguousDeviceCannotBeAdded() {
+  func testUnpluggedCannotBeAddedButIdenticalDevicesCan() throws {
     XCTAssertThrowsError(try addingConnectedDevice(fresh, inventory: [], to: [first]))
     let duplicate = LocalUSBDevice(
       vendor: "2104", product: "0313", location: "00009999", name: "Other", serial: "different")
-    XCTAssertThrowsError(
+    XCTAssertNoThrow(
       try addingConnectedDevice(fresh, inventory: [fresh, duplicate], to: [first]))
-    XCTAssertThrowsError(
+    XCTAssertNoThrow(
       try appendedDevice(
         LocalUSBDevice(
           vendor: "231d", product: "0201", location: "00005678", name: "Duplicate", serial: ""),
@@ -48,7 +48,7 @@ final class PlugAndPlayTests: XCTestCase {
       vendor: "2104", product: "0313", location: "00001234", name: "EyeChip", serial: "")
     let catalog = try appendedDevice(device, to: [first])
     XCTAssertEqual(catalog[0], first)
-    XCTAssertNotEqual(catalog[1].location, first.location)
+    XCTAssertEqual(catalog[1].location, first.location)
     XCTAssertTrue(catalog[1].matches(vendor: 0x2104, product: 0x0313, location: 0x1234))
   }
   func testDeviceLimitAndInvalidIdentifiers() throws {

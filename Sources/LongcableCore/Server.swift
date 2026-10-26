@@ -35,7 +35,14 @@ public final class USBServer {
     self.inventory = inventory
     self.log = log
     protocolTest = false
-    targetStorage = config.targets.enumerated().map { Target($0.element, slot: $0.offset) }
+    targetStorage = []
+    targetStorage = config.targets.enumerated().map { makeTarget($0.element, slot: $0.offset) }
+  }
+  private func makeTarget(_ config: TargetConfig, slot: Int) -> Target {
+    Target(config, slot: slot, context: { [weak self] in
+      guard let self else { return ([config], []) }
+      return (self.targets.map { $0.config }, self.inventory())
+    })
   }
   private init(testConfig: DaemonConfig) {
     config = testConfig
@@ -55,7 +62,7 @@ public final class USBServer {
       try JSONEncoder().encode(catalog).write(to: URL(fileURLWithPath: store.targets), options: .atomic)
       chmod(store.targets, 0o600)
     }
-    let restored = catalog.enumerated().map { Target($0.element, slot: $0.offset) }
+    let restored = catalog.enumerated().map { makeTarget($0.element, slot: $0.offset) }
     for target in restored {
       if let value = enabled[target.config.label.isEmpty ? target.busID : target.config.label] {
         target.setEnabled(value)
@@ -66,23 +73,16 @@ public final class USBServer {
   func status() -> ServerStatus {
     let snapshot = targets
     let detected = visibleDevices(inventory(), configured: snapshot.map { $0.config })
-    let configuredModels = Set(
-      snapshot.map { String(format: "%04x:%04x", $0.config.vendor, $0.config.product) })
+    let matching = snapshot.map { $0.matchingConfig }
     return ServerStatus(
       version: "Swift 1.0", started: started, listen: config.listen, peer: config.peer,
-      devices: snapshot.map { target in
-        target.snapshot(
-          present: detected.contains { device in
-            guard let vendor = UInt32(device.vendor, radix: 16),
-              let product = UInt32(device.product, radix: 16),
-              let location = UInt32(device.location, radix: 16)
-            else { return false }
-            return target.config.matches(vendor: vendor, product: product, location: location)
-          })
+      devices: zip(snapshot, matching).map { target, match in
+        target.snapshot(present: detected.contains { match.matches($0) })
       },
-      availableDevices: detected.filter { !configuredModels.contains($0.vendor + ":" + $0.product) }
+      availableDevices: detected.filter { device in !matching.contains { $0.matches(device) } }
     )
   }
+
   func stop() {
     lifecycle.withLock {
       if stopped { return }
@@ -220,7 +220,7 @@ public final class USBServer {
           _ = t.ensureIdentity()
           t.captureLock.unlock()
         }
-        if let service = findDevice(t.config) {
+        if let service = findDevice(t.matchingConfig) {
           IOObjectRelease(service)
           if t.stateLock.withLock({ t.identity != nil }) { present.append(t) }
         }
@@ -277,7 +277,7 @@ public final class USBServer {
             to: URL(fileURLWithPath: store.targets), options: .atomic)
           chmod(store.targets, 0o600)
           targetLock.withLock {
-            targetStorage.append(Target(newConfig.last!, slot: targetStorage.count))
+            targetStorage.append(makeTarget(newConfig.last!, slot: targetStorage.count))
           }
           log("Added device \(newConfig.last!.label)")
           return ControlReply(

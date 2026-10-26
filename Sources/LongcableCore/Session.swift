@@ -302,7 +302,7 @@ final class Session {
     }
     do {
       let identity = target.identity!
-      try usb.open(target.config, configuration: identity.configuration,
+      try usb.open(target.matchingConfig, configuration: identity.configuration,
         expectedRegistryID: identity.registryID == 0 ? nil : identity.registryID)
       guard connection.operation(3, 0), connection.write(identity.record) else { return }
       target.attached(usb.location)

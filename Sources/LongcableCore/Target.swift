@@ -6,6 +6,16 @@ import IOKit
 
 final class Target {
   let config: TargetConfig
+  private var rememberedConfig: TargetConfig
+  private let matchingLock = NSLock()
+  private let context: (() -> ([TargetConfig], [LocalUSBDevice]))?
+  var matchingConfig: TargetConfig {
+    let (catalog, devices) = context?() ?? ([config], discoverUSBDevices(allowedAppleDevices: [config]))
+    return matchingLock.withLock {
+      rememberedConfig = resolvedTarget(rememberedConfig, configured: catalog, devices: devices)
+      return rememberedConfig
+    }
+  }
   let busID: String
   let wireID: UInt32
   let captureLock = NSLock()
@@ -22,9 +32,12 @@ final class Target {
   private var lastActivity: Date?, lastError: String?
   private var location: String
   init(_ config: TargetConfig, slot: Int,
+       context: (() -> ([TargetConfig], [LocalUSBDevice]))? = nil,
        registryIdentity: @escaping (TargetConfig) -> UInt64? = deviceRegistryIdentity,
        identityLoader: @escaping (TargetConfig, String, UInt32) throws -> Identity = loadIdentity) {
     self.config = config
+    rememberedConfig = config
+    self.context = context
     self.registryIdentity = registryIdentity
     self.identityLoader = identityLoader
     busID = "1-\(slot+1)"
@@ -86,15 +99,16 @@ final class Target {
   func ensureIdentity() -> Bool {
     // A stable USB/IP slot survives port changes, but descriptors belong to one
     // physical registry entry. Never advertise an old entry after unplug/replug.
-    guard let registryID = registryIdentity(config) else {
+    let matching = matchingConfig
+    guard let registryID = registryIdentity(matching) else {
       stateLock.withLock { identity = nil; identityRegistryID = nil }
       return false
     }
     if stateLock.withLock({ identity != nil && identityRegistryID == registryID }) { return true }
     stateLock.withLock { identity = nil; identityRegistryID = nil }
     do {
-      let value = try identityLoader(config, busID, wireID)
-      guard registryIdentity(config) == registryID else { return false }
+      let value = try identityLoader(matching, busID, wireID)
+      guard matchingConfig == matching, registryIdentity(matching) == registryID else { return false }
       stateLock.withLock {
         identity = value
         identityRegistryID = registryID
@@ -104,14 +118,17 @@ final class Target {
     } catch { return false }
   }
   func snapshot(present: Bool = true) -> DeviceStatus {
-    stateLock.withLock {
+    let pinned = matchingConfig.portBound == true
+    return stateLock.withLock {
       DeviceStatus(
         id: busID, name: identity?.name ?? config.label,
         model: String(format: "%04x:%04x", config.vendor, config.product),
         serial: identity?.serial ?? config.label, enabled: enabled,
         state: present ? state : "Not plugged in",
         location: location, completed: completed, bytes: bytes, errors: errors, pending: pending,
-        lastActivity: lastActivity, lastError: lastError)
+        lastActivity: lastActivity, lastError: pinned && !present
+          ? "Identical device: bound to its USB port. Plug it back into the same port or share it again."
+          : lastError)
     }
   }
 }

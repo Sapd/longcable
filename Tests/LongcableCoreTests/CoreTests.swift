@@ -24,8 +24,8 @@ final class CoreTests: XCTestCase {
         vendor: 0x231d, product: slot == 0 ? 0x201 : 0x200, location: 0x1234,
         label: slot == 0 ? "LEFT" : "RIGHT"), slot: slot)
   }
-  func testConfigRejectsAmbiguousIdentities() throws {
-    XCTAssertThrowsError(
+  func testConfigAcceptsIdenticalModelsOnDifferentPorts() throws {
+    XCTAssertNoThrow(
       try DaemonConfig(arguments: [
         "127.0.0.1", "127.0.0.1", "231d", "0201", "1234", "LEFT", "231d", "0201", "5678", "OTHER",
       ]))

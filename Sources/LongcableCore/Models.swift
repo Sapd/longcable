@@ -35,15 +35,22 @@ public struct TargetConfig: Codable, Equatable, Sendable {
   public var product: UInt16
   public var location: UInt32
   public var label: String
-  public init(vendor: UInt16, product: UInt16, location: UInt32, label: String) {
+  public var hardwareSerial: String?
+  public var portBound: Bool?
+  public init(vendor: UInt16, product: UInt16, location: UInt32, label: String,
+              hardwareSerial: String? = nil, portBound: Bool? = nil) {
     self.vendor = vendor
     self.product = product
     self.location = location
     self.label = label
+    self.hardwareSerial = hardwareSerial
+    self.portBound = portBound
   }
-  public func matches(vendor: UInt32, product: UInt32, location: UInt32) -> Bool {
+  public func matches(vendor: UInt32, product: UInt32, location: UInt32, serial: String = "") -> Bool {
     UInt32(self.vendor) == vendor && UInt32(self.product) == product
-      && ((self.vendor != 0x05ac && !label.isEmpty) || self.location == location)
+      && (self.vendor == 0x05ac || label.isEmpty
+        ? self.location == location
+        : (hardwareSerial.map { $0 == serial } ?? (portBound == true ? self.location == location : true)))
   }
 }
 public struct DaemonConfig {
@@ -100,8 +107,8 @@ public struct DaemonConfig {
       else { throw USBError.message("Invalid identity label") }
       guard
         !items.contains(where: {
-          $0.location == l
-            || (!legacy && ($0.label == label || ($0.vendor == v && $0.product == p)))
+          ($0.vendor == v && $0.product == p && $0.location == l)
+            || (!legacy && $0.label == label)
         })
       else { throw USBError.message("Ambiguous duplicate target") }
       items.append(TargetConfig(vendor: v, product: p, location: l, label: label))
