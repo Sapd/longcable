@@ -144,15 +144,16 @@ struct IsoPacket: Equatable {
     guard count > 0, count <= limit, data.count == count * 16,
       bufferLength >= 0, bufferLength <= 1_048_576 else { return nil }
     var packets = [IsoPacket]()
-    var end: UInt32 = 0
+    var total: UInt32 = 0
     for i in 0..<count {
       let pos = i * 16, offset = data.u32(i * 16), length = data.u32(i * 16 + 4)
-      // Ordered, nonoverlapping ranges also bound the sum of actual lengths.
-      guard offset >= end, offset <= bufferLength, length <= UInt32(bufferLength) - offset,
-        data.u32(pos + 8) <= length else { return nil }
+      // Submit actual_length/status are client output fields, not validation inputs.
+      // Ranges may be unordered or overlap; bound each range and the packed total.
+      guard offset <= bufferLength, length <= UInt32(bufferLength) - offset,
+        length <= UInt32(bufferLength) - total else { return nil }
       packets.append(IsoPacket(offset: offset, length: length,
         actualLength: data.u32(pos + 8), status: Int32(bitPattern: data.u32(pos + 12))))
-      end = offset + length
+      total += length
     }
     return packets
   }

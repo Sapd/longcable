@@ -281,7 +281,8 @@ final class Session {
             transport.supportsAlternate(UInt8(request.wIndex), alternate: UInt8(request.wValue)) else {
             finish(job, result: pipeStalled, bytes: 0); return
           }
-          guard let endpoints = transport.endpointsForInterface(UInt8(request.wIndex)) else {
+          guard let previous = transport.currentAlternate(UInt8(request.wIndex)),
+            let endpoints = transport.endpointsForInterface(UInt8(request.wIndex)) else {
             finish(job, result: pipeStalled, bytes: 0); return
           }
           do {
@@ -289,9 +290,18 @@ final class Session {
             let selected = try transport.selectInterface(UInt8(request.wIndex), alternate: UInt8(request.wValue))
             finish(job, result: selected ? kIOReturnSuccess : pipeStalled, bytes: 0)
           } catch {
-            transportBroken = true
-            finish(job, result: nativeError(error), bytes: 0)
-            connection.interrupt()
+            // A failed native select may already have closed the old pipes.
+            // Reselect and reopen them before deciding whether the session is lost.
+            do {
+              guard try transport.selectInterface(UInt8(request.wIndex), alternate: previous) else {
+                throw USBError.message("Could not recover previous alternate")
+              }
+              finish(job, result: pipeStalled, bytes: 0)
+            } catch {
+              transportBroken = true
+              finish(job, result: nativeError(error), bytes: 0)
+              connection.interrupt()
+            }
           }
         } else if request.bmRequestType == 0x81 && request.bRequest == 10 {
           guard request.wValue == 0, request.wIndex <= 255, request.wLength == 1,

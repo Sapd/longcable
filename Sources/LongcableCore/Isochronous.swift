@@ -4,18 +4,15 @@ import Foundation
 import IOKit
 import IOUSBHost
 
-// firstFrameNumber is always in milliseconds; Linux HS start_frame/interval
-// use microframes. Foreign controller clocks and expired frames fall back to ASAP.
-func isoFirstFrame(current: UInt64, requested: UInt32, asap: Bool, highSpeed: Bool) -> UInt64 {
-  let frame = UInt64(requested) / (highSpeed ? 8 : 1)
-  let earliest = current + 2
-  return !asap && frame >= earliest && frame <= current + 1024
-    && (!highSpeed || requested % 8 == 0) ? frame : earliest
+// IOUSBHost firstFrameNumber is in milliseconds, in this host's clock.
+let isoASAPLead: UInt64 = 4
+func isoFirstFrame(current: UInt64, next: UInt64) -> UInt64 {
+  next > current ? next : current + isoASAPLead
 }
 func isoPacketStatus(_ result: IOReturn) -> Int32 {
   switch result {
   case kIOReturnSuccess, kIOReturnUnderrun: return 0
-  case kIOReturnInvalid, IOReturn(bitPattern: 0xe000_400e), IOReturn(bitPattern: 0xe000_400f): return -18
+  case kIOReturnInvalid, kIOReturnIsoTooOld, kIOReturnIsoTooNew: return -18
   case kIOReturnOverrun: return -75
   default:
     let status = usbStatus(result)
@@ -88,7 +85,7 @@ extension IOUSBHostPipe: IsoRequestPipe {
 }
 
 // Shared by native pipes and fake pipes: tests exercise the actual frame selection,
-// interval validation, native list construction, and packet completion mapping.
+// descriptor intervals, native list construction, and packet completion mapping.
 final class IsoPipeQueue {
   let pipe: IsoRequestPipe
   let highSpeed: Bool
@@ -96,16 +93,40 @@ final class IsoPipeQueue {
   let maximumPayload: Int
   let currentFrame: () -> UInt64
   private var nextFrame: UInt64 = 0
-  init(pipe: IsoRequestPipe, highSpeed: Bool, interval: UInt32, maximumPayload: Int,
+  private var generation: UInt64 = 0
+  // Native callbacks may arrive on a different queue, or inline in enqueue.
+  private let lock = NSRecursiveLock()
+  private var loggedIntervalMismatch = false
+  private var lastFailureLog: Int64?
+  private let endpointAddress: UInt8
+  private let log: (String) -> Void
+  init(pipe: IsoRequestPipe, highSpeed: Bool, interval: UInt32, maximumPayload: Int, endpointAddress: UInt8 = 0,
+    log: @escaping (String) -> Void = { EventLog.shared.write($0) },
     currentFrame: @escaping () -> UInt64) {
     self.pipe = pipe; self.highSpeed = highSpeed; self.interval = interval
     self.maximumPayload = maximumPayload; self.currentFrame = currentFrame
+    self.endpointAddress = endpointAddress; self.log = log
   }
-  func reset() { nextFrame = 0 }
+  func reset() {
+    lock.lock(); defer { lock.unlock() }
+    nextFrame = 0; generation &+= 1
+  }
+  private func logFailure(_ result: IOReturn) {
+    guard result != kIOReturnSuccess && result != kIOReturnUnderrun else { return }
+    let now = monotonicMS()
+    guard lastFailureLog == nil || now - lastFailureLog! >= 1000 else { return }
+    lastFailureLog = now
+    log(String(format: "Iso endpoint 0x%02x native status 0x%08x", endpointAddress, UInt32(bitPattern: result)))
+  }
   func enqueue(data: NSMutableData, packets: [IsoPacket], startFrame: UInt32,
     requestedInterval: UInt32, asap: Bool,
     completion: @escaping (IOReturn, UInt32, [IsoPacket]) -> Void) throws {
-    guard interval > 0, requestedInterval == 0 || requestedInterval == interval,
+    lock.lock(); defer { lock.unlock() }
+    if requestedInterval != 0 && requestedInterval != interval && !loggedIntervalMismatch {
+      loggedIntervalMismatch = true
+      log("Iso endpoint \(String(format: "0x%02x", endpointAddress)) ignoring client interval \(requestedInterval); descriptor interval \(interval)")
+    }
+    guard interval > 0,
       !packets.isEmpty, packets.count <= IsoPacket.limit,
       packets.allSatisfy({ $0.length <= maximumPayload && $0.offset <= data.length
         && $0.length <= data.length - Int($0.offset) }) else {
@@ -118,21 +139,54 @@ final class IsoPipeQueue {
       throw NSError(domain: "IOUSBHost", code: Int(kIOReturnUnsupported))
     }
     let duration = serviceUnits / (highSpeed ? 8 : 1)
-    let current = currentFrame()
-    let frame = max(nextFrame, isoFirstFrame(current: current,
-      requested: startFrame, asap: asap, highSpeed: highSpeed))
+    // Client start_frame and ASAP flags refer to a foreign controller clock.
+    // Every request chains on our native queue, including non-ASAP submits.
+    let frame = isoFirstFrame(current: currentFrame(), next: nextFrame)
+    try submit(data: data, packets: packets, frame: frame, duration: duration,
+      generation: generation, retry: true, completion: completion)
+  }
+  private func submit(data: NSMutableData, packets: [IsoPacket], frame: UInt64,
+    duration: UInt64, generation: UInt64, retry: Bool,
+    completion: @escaping (IOReturn, UInt32, [IsoPacket]) -> Void) throws {
     let lastFrame = frame + UInt64(packets.count - 1) * UInt64(interval) / (highSpeed ? 8 : 1)
-    guard frame <= current + 1024, lastFrame <= current + 1024 else {
+    guard lastFrame <= currentFrame() + 1024 else {
       throw NSError(domain: "IOUSBHost", code: Int(kIOReturnBadArgument))
     }
     let wireFrame = UInt32(truncatingIfNeeded: frame * (highSpeed ? 8 : 1))
     let list = IsoFrameList(data: data, packets: packets)
-    // EXPERIMENTAL: native transactions run at the descriptor's service interval.
-    // HS frame lists must span whole milliseconds until sub-frame scheduling
-    // can be validated. Non-ASAP clock translation also needs hardware validation.
-    try pipe.enqueue(data: data, list: list, firstFrame: frame) { [list] result in
-      completion(result, wireFrame, list.results(overall: result))
+    let previousNext = nextFrame
+    let reservedNext = max(nextFrame, frame + duration)
+    nextFrame = reservedNext
+    do {
+      try pipe.enqueue(data: data, list: list, firstFrame: frame) { [weak self, list] result in
+        if let self {
+          self.lock.lock(); defer { self.lock.unlock() }
+          self.logFailure(result)
+          if result == kIOReturnIsoTooOld && retry && self.generation == generation {
+            let retryFrame = max(self.nextFrame, self.currentFrame() + 2 * isoASAPLead)
+            do {
+              try self.submit(data: data, packets: packets, frame: retryFrame,
+                duration: duration, generation: generation, retry: false, completion: completion)
+            } catch {
+              let status = IOReturn(truncatingIfNeeded: (error as NSError).code)
+              self.logFailure(status)
+              let failed = IsoFrameList(data: data, packets: packets)
+              completion(status, UInt32(truncatingIfNeeded: retryFrame * (self.highSpeed ? 8 : 1)),
+                failed.results(overall: status))
+            }
+            return
+          }
+        }
+        completion(result, wireFrame, list.results(overall: result))
+      }
+    } catch {
+      if self.generation == generation && nextFrame == reservedNext { nextFrame = previousNext }
+      let status = IOReturn(truncatingIfNeeded: (error as NSError).code)
+      logFailure(status)
+      if status == kIOReturnIsoTooOld && retry && self.generation == generation {
+        try submit(data: data, packets: packets, frame: max(nextFrame, currentFrame() + 2 * isoASAPLead),
+          duration: duration, generation: generation, retry: false, completion: completion)
+      } else { throw error }
     }
-    nextFrame = frame + duration
   }
 }

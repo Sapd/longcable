@@ -32,6 +32,9 @@ final class FakeUSBTransport: USBTransferTransport {
   var events = [String]()
   var completeAbortInline = false
   var resetError: Error?
+  var selectionFailures = [Bool]()
+  var selectionAttempts = [UInt8]()
+  var alternateSupport: ((UInt8, UInt8) -> Bool)?
   var types: [UInt8: UInt8] = [1: 2, 2: 2, 0x81: 2, 0x82: 3]
   var packetSize = 4
   func endpointType(_ address: UInt8) -> UInt8? { types[address] }
@@ -59,6 +62,10 @@ final class FakeUSBTransport: USBTransferTransport {
   }
   func selectInterface(_ number: UInt8, alternate: UInt8) throws -> Bool {
     guard number <= 1 else { return false }
+    selectionAttempts.append(alternate)
+    if !selectionFailures.isEmpty && selectionFailures.removeFirst() {
+      throw USBError.message("Native alternate selection failed")
+    }
     if let resetError { throw resetError }
     selectedInterfaces.append(number)
     alternates[number] = alternate
@@ -70,7 +77,9 @@ final class FakeUSBTransport: USBTransferTransport {
     return true
   }
   func currentAlternate(_ number: UInt8) -> UInt8? { alternates[number] }
-  func supportsAlternate(_ number: UInt8, alternate: UInt8) -> Bool { number <= 1 && alternate <= 1 }
+  func supportsAlternate(_ number: UInt8, alternate: UInt8) -> Bool {
+    alternateSupport?(number, alternate) ?? (number <= 1 && alternate <= 1)
+  }
   func enqueueIso(_ address: UInt8, data: NSMutableData, packets: [IsoPacket],
     startFrame: UInt32, interval: UInt32, asap: Bool,
     completion: @escaping (IOReturn, UInt32, [IsoPacket]) -> Void) throws {
@@ -289,6 +298,67 @@ final class USBTransferTests: XCTestCase {
     finish(0, transport, session)
     XCTAssertEqual(peer.read(48)?.u32(4), 1); XCTAssertNotNil(peer.read(4))
   }
+  func testFailedAlternateSelectRecoversOldPipesStallsAndKeepsSessionUsable() throws {
+    let (session, peer, transport) = try fixture()
+    transport.selectionFailures = [true, false]
+    var request = header(10, endpoint: 0, direction: 0, length: 0)
+    request[40] = 1; request[41] = 11; request[42] = 1; request[44] = 1
+    XCTAssertTrue(try session.submit(request))
+    XCTAssertEqual(Int32(bitPattern: try XCTUnwrap(peer.read(48)).u32(20)), -32)
+    XCTAssertEqual(transport.selectionAttempts, [1, 0])
+    XCTAssertEqual(transport.currentAlternate(1), 0)
+    XCTAssertTrue(try session.submit(header(11)))
+    finish(0, transport, session)
+    XCTAssertEqual(peer.read(48)?.u32(20), 0); XCTAssertNotNil(peer.read(4))
+    XCTAssertEqual(transport.submissions[0].address, 0x81)
+  }
+  func testFailedAlternateRecoveryIsFatal() throws {
+    let (session, peer, transport) = try fixture()
+    transport.selectionFailures = [true, true]
+    var request = header(10, endpoint: 0, direction: 0, length: 0)
+    request[40] = 1; request[41] = 11; request[42] = 1; request[44] = 1
+    XCTAssertTrue(try session.submit(request))
+    XCTAssertNotEqual(try XCTUnwrap(peer.read(48)).u32(20), 0)
+    XCTAssertEqual(transport.selectionAttempts, [1, 0])
+    XCTAssertFalse(try session.submit(header(11)))
+    XCTAssertTrue(transport.submissions.isEmpty)
+    XCTAssertNil(peer.read(1, timeoutMS: 20))
+  }
+  func testConflictingAlternateStallsBeforeInvalidatingActiveOrQueuedURBs() throws {
+    let (session, peer, transport) = try fixture()
+    let config = Data([9, 2, 0, 0, 2, 1, 0, 0x80, 50,
+      9, 4, 0, 0, 1, 3, 0, 0, 0, 7, 5, 0x82, 3, 8, 0, 1,
+      9, 4, 1, 0, 1, 3, 0, 0, 0, 7, 5, 0x81, 2, 8, 0, 1,
+      9, 4, 1, 1, 1, 3, 0, 0, 0, 7, 5, 0x82, 2, 8, 0, 1])
+    let map = InterfacePipeMap<UInt8>()
+    for number: UInt8 in [0, 1] {
+      try map.replace(number: number, alternate: 0, configuration: config, highSpeed: false,
+        select: {}, open: { $0.address })
+    }
+    transport.alternateSupport = { number, alternate in
+      map.supportsAlternate(number: number, alternate: alternate, configuration: config, highSpeed: false)
+    }
+    // Use OUT with ZERO_PACKET so invalidating the active request is observable:
+    // its successful completion must still append the ZLP.
+    XCTAssertTrue(peer.write(Data(repeating: 1, count: 4)))
+    XCTAssertTrue(try session.submit(header(2, direction: 0, flags: 0x40)))
+    XCTAssertTrue(peer.write(Data(repeating: 2, count: 4)))
+    XCTAssertTrue(try session.submit(header(3, direction: 0)))
+    var request = header(10, endpoint: 0, direction: 0, length: 0)
+    request[40] = 1; request[41] = 11; request[42] = 1; request[44] = 1
+    XCTAssertTrue(try session.submit(request))
+    let stalled = try XCTUnwrap(peer.read(48))
+    XCTAssertEqual(stalled.u32(4), 10); XCTAssertEqual(Int32(bitPattern: stalled.u32(20)), -32)
+    XCTAssertTrue(transport.selectionAttempts.isEmpty)
+    XCTAssertEqual(session.outstandingCount, 2)
+    finish(0, transport, session)
+    XCTAssertNil(transport.submissions[1].data)
+    finish(1, transport, session, bytes: 0)
+    XCTAssertEqual(peer.read(48)?.u32(4), 2)
+    XCTAssertEqual(transport.submissions.count, 3)
+    finish(2, transport, session)
+    XCTAssertEqual(peer.read(48)?.u32(4), 3)
+  }
   func testNativeResetFailureCannotBeAcknowledgedAsSuccessOrStartQueuedNativeWork() throws {
     let (session, peer, transport) = try fixture()
     transport.resetError = USBError.message("Reset failed")
@@ -417,6 +487,22 @@ final class USBTransferTests: XCTestCase {
     let packets = try XCTUnwrap(IsoPacket.decode(try XCTUnwrap(peer.read(32)), count: 2, bufferLength: 12))
     XCTAssertEqual(packets.map(\.actualLength), [2, 1]); XCTAssertEqual(packets.map(\.status), [0, -71])
     XCTAssertEqual(session.outstandingCount, 0)
+  }
+  func testSubmitAcceptsUnorderedDescriptorsAndDiscardsClientCompletionFields() throws {
+    let (session, peer, transport) = try fixture()
+    try selectAlternate(session, peer)
+    let packets = [IsoPacket(offset: 8, length: 4, actualLength: UInt32.max, status: -999),
+      IsoPacket(offset: 0, length: 4, actualLength: 999, status: Int32.max)]
+    try submitIso(session, peer, flags: 0, packets: packets)
+    let request = transport.isoSubmissions[0]
+    XCTAssertEqual(request.list.packets, [IsoPacket(offset: 8, length: 4), IsoPacket(offset: 0, length: 4)])
+    completeIso(0, transport, session)
+    let reply = try XCTUnwrap(peer.read(48))
+    XCTAssertEqual(reply.u32(28), 80, "RET_SUBMIT uses the native scheduled frame, even without ASAP")
+    XCTAssertNotNil(peer.read(32))
+    XCTAssertTrue(try session.submit(header(2, endpoint: 2)))
+    finish(0, transport, session)
+    XCTAssertEqual(peer.read(48)?.u32(20), 0); XCTAssertNotNil(peer.read(4))
   }
   func testIsoOUTUsesOffsetsAndReturnsNoPayload() throws {
     let (session, peer, transport) = try fixture()

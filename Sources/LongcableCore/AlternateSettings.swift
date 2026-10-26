@@ -44,14 +44,20 @@ func interfaceEndpoints(_ bytes: Data, number: UInt8, alternate: UInt8,
 }
 
 // The same transition code opens real IOUSBHost pipes and fake pipes. Publish a
-// complete replacement only after opening succeeds; an error after native select
-// is fatal to the session, since the old pipes have already been invalidated.
+// complete replacement only after opening succeeds. Session recovers a failed
+// selection by reselecting the old alternate and reopening its pipes.
 final class InterfacePipeMap<Pipe> {
   private(set) var pipes = [UInt8: Pipe]()
   private(set) var descriptors = [UInt8: USBEndpoint]()
   private(set) var alternates = [UInt8: UInt8]()
   private var addresses = [UInt8: Set<UInt8>]()
   func endpoints(_ number: UInt8) -> Set<UInt8>? { addresses[number] }
+  func supportsAlternate(number: UInt8, alternate: UInt8, configuration: Data, highSpeed: Bool) -> Bool {
+    guard let selected = interfaceEndpoints(configuration, number: number,
+      alternate: alternate, highSpeed: highSpeed) else { return false }
+    let old = addresses[number] ?? []
+    return selected.allSatisfy { pipes[$0.address] == nil || old.contains($0.address) }
+  }
   func replace(number: UInt8, alternate: UInt8, configuration: Data, highSpeed: Bool,
     select: () throws -> Void, open: (USBEndpoint) throws -> Pipe) throws {
     guard let selected = interfaceEndpoints(configuration, number: number,

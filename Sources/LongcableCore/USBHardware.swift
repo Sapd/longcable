@@ -237,7 +237,7 @@ final class CapturedDevice: USBTransferTransport {
         var iso: IsoPipeQueue?
         if let interval = endpoint.isoInterval, let device, !superSpeed {
           iso = IsoPipeQueue(pipe: pipe, highSpeed: highSpeed, interval: interval,
-            maximumPayload: endpoint.maximumPayload, currentFrame: { device.__frameNumber(withTime: nil) })
+            maximumPayload: endpoint.maximumPayload, endpointAddress: endpoint.address, currentFrame: { device.__frameNumber(withTime: nil) })
         }
         return NativePipe(pipe: pipe, iso: iso)
       })
@@ -247,17 +247,23 @@ final class CapturedDevice: USBTransferTransport {
   func supportsAlternate(_ number: UInt8, alternate: UInt8) -> Bool {
     guard let interface = interfaceByNumber[number] else { return false }
     let config = interface.configurationDescriptor
-    return interfaceEndpoints(descriptorData(config, Int(UInt16(littleEndian: config.pointee.wTotalLength))),
-      number: number, alternate: alternate, highSpeed: highSpeed) != nil
+    return pipeMap.supportsAlternate(number: number, alternate: alternate,
+      configuration: descriptorData(config, Int(UInt16(littleEndian: config.pointee.wTotalLength))),
+      highSpeed: highSpeed)
   }
   func selectInterface(_ number: UInt8, alternate: UInt8) throws -> Bool {
     guard let interface = interfaceByNumber[number], supportsAlternate(number, alternate: alternate) else { return false }
+    // Fence retries before native selection aborts/closes this interface's pipes.
+    for address in pipeMap.endpoints(number) ?? [] { pipeMap.pipes[address]?.iso?.reset() }
     // Native selection aborts/closes old pipes on only this interface.
     try guarded { try openPipes(interface, alternate: alternate, selecting: true) }
     return true
   }
   private func clearInterfaces() {
-    for binding in pipeMap.pipes.values { try? guarded { try binding.pipe.__abort(with: .synchronous) } }
+    for binding in pipeMap.pipes.values {
+      binding.iso?.reset()
+      try? guarded { try binding.pipe.__abort(with: .synchronous) }
+    }
     for interface in interfaces { try? guarded { interface.destroy() } }
     pipeMap.removeAll()
     interfaces.removeAll()
