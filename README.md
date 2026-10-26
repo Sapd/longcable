@@ -3,7 +3,8 @@
 **A very long USB cable for your Mac.** Longcable is a native macOS
 [USB/IP](https://docs.kernel.org/usb/usbip_protocol.html) server: plug a USB device into
 your Mac and use it on a Windows (or Linux) PC over the network, as if it were plugged
-in there.
+in there. In other words: USB passthrough (USB over IP, USB redirection) from a Mac to
+a PC, for joysticks, HOTAS setups, eye trackers, controllers and USB microphones.
 
 USB/IP is built into Linux for sharing and using devices. Windows has
 [usbipd-win](https://github.com/dorssel/usbipd-win) for sharing and
@@ -19,7 +20,7 @@ to install there.
   <img src="Artwork/screenshot.png" width="600" alt="Longcable window: both VKB sticks and the eye tracker connected to the Windows PC">
 </p>
 
-## Why I built it
+## Why I built it: HOTAS and eye tracking over game streaming
 
 I play **Star Citizen** on a Windows gaming PC and stream it to my Mac with
 **Moonlight** (from a **Sunshine** or **Apollo** host; **Artemis** works the same way).
@@ -189,6 +190,43 @@ Tailscale is available, otherwise the primary LAN subnet. Use explicit arguments
 in Manual setup to restrict this further. Refused PCs appear in the app with an
 **Allow** button; click it only for a PC you recognise. These extra peers are saved
 in `peers.json` and merged with the configured peers across restarts.
+
+## FAQ
+
+### Can I use a Tobii eye tracker with Moonlight, Sunshine or Apollo?
+
+Yes. Game streaming forwards keyboard, mouse and gamepads, but not an eye tracker. Plug
+the Tobii into the Mac you stream to, share it in Longcable and attach it on the gaming
+PC: the Tobii software and games such as Star Citizen see it as locally connected. Tested
+with a Tobii Eye Tracker 5.
+
+### Moonlight USB passthrough: how do I use a HOTAS or joystick while streaming?
+
+The same way. Moonlight has no general USB passthrough, so HOTAS sticks, throttles and
+pedals stay on the Mac. Longcable forwards them over USB/IP to the PC running Sunshine or
+Apollo. Tested with two VKB Gladiator EVO sticks in a dual-stick setup.
+
+### How do I use a USB device from my Mac on a Windows PC?
+
+Install Longcable on the Mac, tick the device in the app, click **Windows command** on
+the device and paste the command into an administrator PowerShell on the PC. Windows
+remembers it and reconnects it after reboots. See [Quick start](#quick-start).
+
+### Is there a free VirtualHere alternative for macOS?
+
+Longcable is free and open source (GPL-3.0) and uses the standard USB/IP protocol, so
+it works with the free, signed usbip-win2 client on Windows and the built-in usbip on
+Linux. See [Alternatives](#alternatives) for the differences.
+
+### Does it work over the internet?
+
+Yes, through [Tailscale](https://tailscale.com) or another VPN such as WireGuard. Don't
+forward the USB/IP port on your router: USB/IP has no authentication or encryption.
+
+### Can I share a USB microphone?
+
+Experimentally. An Elgato Wave:3 works on Windows, including in Discord; see
+[Limitations](#limitations) for the known issue after unplugging it.
 
 ## Alternatives
 

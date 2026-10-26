@@ -101,7 +101,9 @@ struct DeviceWindowsCommandView: View {
             NSPasteboard.general.setString(text, forType: .string)
           }.controlSize(.small)
         }
+        // Popovers don't propose a height; without fixedSize the block collapses to one line.
         Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading).padding(10)
           .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
       } else {
@@ -111,7 +113,7 @@ struct DeviceWindowsCommandView: View {
         .font(.caption).foregroundStyle(.secondary)
       Text("port --stash makes Windows reconnect it automatically after reboots.")
         .font(.caption).foregroundStyle(.secondary)
-    }.padding(16).frame(width: 600)
+    }.padding(16).frame(width: 600).fixedSize(horizontal: false, vertical: true)
       .task {
         let detected = await Task.detached(priority: .utility) { ConnectionSetup.detect() }.value
         addresses = detected
