@@ -10,6 +10,10 @@ entitlement and no SIP changes. On Windows you use the official, signed
 [usbip-win2](https://github.com/vadimgrn/usbip-win2) client, so there's nothing extra
 to install there.
 
+<p align="center">
+  <img src="Artwork/screenshot.png" width="600" alt="Longcable window: both VKB sticks and the eye tracker connected to the Windows PC">
+</p>
+
 ## Why I built it
 
 I play **Star Citizen** on a Windows gaming PC and stream it to my Mac with
@@ -42,6 +46,10 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | 30-second network drop (Tailscale off) | the connection survived; nothing to reattach |
 | Rebooting Windows | stashed devices came back by themselves |
 | Both usbip-win2 receive modes | work; low-latency is used day to day |
+| Normal Star Citizen sessions | hours of gaming with both sticks and the eye tracker |
+
+Beyond these specific checks, it is in daily use: I play Star Citizen for hours with it,
+and the sticks feel the same as when plugged in directly.
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
 53 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
