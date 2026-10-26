@@ -76,3 +76,46 @@ struct SetupView: View {
     }
   }
 }
+
+struct DeviceWindowsCommandView: View {
+  let device: DeviceStatus
+  @State private var addresses = ConnectionAddresses()
+  @State private var tailscale = false
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Windows command").font(.headline)
+      Text(device.name + " · " + device.id).font(.caption).foregroundStyle(.secondary)
+      if addresses.address(tailscale: true) != nil && addresses.lanIP != nil {
+        Picker("Network", selection: $tailscale) {
+          Text("Tailscale").tag(true)
+          Text("LAN").tag(false)
+        }.pickerStyle(.segmented).controlSize(.small)
+      }
+      if let address = addresses.address(tailscale: tailscale) {
+        let text = ConnectionSetup.windowsDevice(server: address, busID: device.id)
+        HStack {
+          Text("Run in administrator PowerShell").font(.subheadline)
+          Spacer()
+          Button("Copy") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+          }.controlSize(.small)
+        }
+        Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+          .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      } else {
+        Text("No Mac address detected. Check your connection.").foregroundStyle(.secondary)
+      }
+      Text("[usbip-win2](https://github.com/vadimgrn/usbip-win2/releases) must be installed.")
+        .font(.caption).foregroundStyle(.secondary)
+      Text("port --stash makes Windows reconnect it automatically after reboots.")
+        .font(.caption).foregroundStyle(.secondary)
+    }.padding(16).frame(width: 600)
+      .task {
+        let detected = await Task.detached(priority: .utility) { ConnectionSetup.detect() }.value
+        addresses = detected
+        tailscale = detected.prefersTailscale
+      }
+  }
+}

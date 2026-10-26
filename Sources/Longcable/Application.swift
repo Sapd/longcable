@@ -148,6 +148,11 @@ import LongcableCore
     }
   }
 }
+private extension DeviceStatus {
+  var displayState: String {
+    state == "Waiting for Windows" ? "Not attached by a PC yet" : state
+  }
+}
 struct MenuContent: View {
   @ObservedObject var model: SharingModel
   @Environment(\.openWindow) var openWindow
@@ -156,7 +161,7 @@ struct MenuContent: View {
     if let status = model.status {
       ForEach(status.devices) { device in
         Menu(device.name) {
-          Text(device.state)
+          Text(device.displayState)
           Button(device.enabled ? "Stop Sharing" : "Share with Windows") {
             model.action(device.enabled ? "unshare" : "share", device.id)
           }
@@ -290,6 +295,7 @@ struct DeviceCard: View {
   let device: DeviceStatus
   @ObservedObject var model: SharingModel
   @State private var details = false
+  @State private var showingWindowsCommand = false
   var icon: String {
     if device.model.hasPrefix("2104") { return "eye" }
     if device.model.hasPrefix("28de") { return "gamecontroller" }
@@ -307,7 +313,11 @@ struct DeviceCard: View {
           Text(device.name).font(.headline)
           HStack(spacing: 5) {
             Circle().fill(connected ? .green : .secondary).frame(width: 6, height: 6)
-            Text(model.online ? device.state : "Waiting for sharing service").font(.caption).foregroundStyle(.secondary)
+            Text(model.online ? device.displayState : "Waiting for sharing service").font(.caption).foregroundStyle(.secondary)
+          }
+          if model.online && device.state == "Waiting for Windows" {
+            Text("Run the Windows command on your PC, or wait if it is reconnecting.")
+              .font(.caption).foregroundStyle(.secondary)
           }
           if !connected, let error = device.lastError, error.hasPrefix("In use by") || error.hasPrefix("Another app") {
             Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
@@ -331,6 +341,11 @@ struct DeviceCard: View {
         Button(details ? "Hide Details" : "Details") { details.toggle() }.buttonStyle(.plain).font(
           .caption
         ).foregroundStyle(.tint)
+        Button("Windows command") { showingWindowsCommand = true }
+          .controlSize(.small)
+          .popover(isPresented: $showingWindowsCommand) {
+            DeviceWindowsCommandView(device: device)
+          }
         Button("Reconnect", systemImage: "arrow.triangle.2.circlepath") {
           model.action("reconnect", device.id)
         }

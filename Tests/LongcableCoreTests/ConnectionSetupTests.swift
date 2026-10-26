@@ -25,6 +25,33 @@ final class ConnectionSetupTests: XCTestCase {
     & $usbip port --stash
     """)
   }
+  func testWindowsDeviceCommandIncludesOnlyOneDevice() {
+    XCTAssertEqual(ConnectionSetup.windowsDevice(server: "192.168.1.2", busID: "1-2"), """
+    $usbip = 'C:\\Program Files\\USBip\\usbip.exe'
+    & $usbip attach -r '192.168.1.2' -b '1-2' --receive-mode=low-latency
+    & $usbip port --stash
+    """)
+  }
+  func testWindowsDeviceCommandQuotesMagicDNSAndBusID() throws {
+    let addresses = ConnectionAddresses(tailscaleIP: "100.64.1.2", magicDNS: "mac's.tail.ts.net.")
+    let server = try XCTUnwrap(addresses.address(tailscale: addresses.prefersTailscale))
+    XCTAssertEqual(ConnectionSetup.windowsDevice(server: server, busID: "1-'2").components(separatedBy: "\n")[1],
+      "& $usbip attach -r 'mac''s.tail.ts.net' -b '1-''2' --receive-mode=low-latency")
+  }
+  func testWindowsDeviceCommandNetworkChoice() throws {
+    let addresses = ConnectionAddresses(tailscaleIP: "100.64.1.2", magicDNS: "mac.tail.ts.net.", lanIP: "192.168.1.2")
+    for (tailscale, expected) in [(addresses.prefersTailscale, "mac.tail.ts.net"), (false, "192.168.1.2")] {
+      let server = try XCTUnwrap(addresses.address(tailscale: tailscale))
+      XCTAssertTrue(ConnectionSetup.windowsDevice(server: server, busID: "1-1")
+        .contains("attach -r '\(expected)' -b '1-1'"))
+    }
+    for addresses in [ConnectionAddresses(tailscaleIP: "100.64.1.2", lanIP: "192.168.1.2"),
+      ConnectionAddresses(lanIP: "192.168.1.2")] {
+      let server = try XCTUnwrap(addresses.address(tailscale: addresses.prefersTailscale))
+      XCTAssertTrue(ConnectionSetup.windowsDevice(server: server, busID: "1-1")
+        .contains("attach -r '\(addresses.tailscaleIP ?? "192.168.1.2")' -b '1-1'"))
+    }
+  }
   func testLinuxCommandsAndQuoting() {
     XCTAssertEqual(ConnectionSetup.linux(server: "192.168.1.2", busIDs: ["1-1"]), "sudo modprobe vhci-hcd\nusbip list -r '192.168.1.2'\nsudo usbip attach -r '192.168.1.2' -b '1-1'")
     XCTAssertTrue(ConnectionSetup.windowsQuick(server: "a'b").hasSuffix("-Server 'a''b'"))

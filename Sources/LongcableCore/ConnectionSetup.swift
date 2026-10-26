@@ -29,6 +29,11 @@ public enum ConnectionSetup {
       + busIDs.map { "& $usbip attach -r \(psQuote(server)) -b \(psQuote($0)) --receive-mode=low-latency" }
       + ["& $usbip port --stash"]).joined(separator: "\n")
   }
+  public static func windowsDevice(server: String, busID: String) -> String {
+    ["$usbip = 'C:\\Program Files\\USBip\\usbip.exe'",
+      "& $usbip attach -r \(psQuote(server)) -b \(psQuote(busID)) --receive-mode=low-latency",
+      "& $usbip port --stash"].joined(separator: "\n")
+  }
   public static func linux(server: String, busIDs: [String]) -> String {
     (["sudo modprobe vhci-hcd", "usbip list -r \(shellQuote(server))"]
       + busIDs.map { "sudo usbip attach -r \(shellQuote(server)) -b \(shellQuote($0))" }).joined(separator: "\n")
