@@ -107,6 +107,10 @@ func loadIdentity(_ config: TargetConfig, busID: String, wireID: UInt32) throws 
       device = try IOUSBHostDevice(
         __ioService: service, options: [], queue: nil, interestHandler: nil)
     } catch let error as NSError where error.code == Int(kIOReturnExclusiveAccess) {
+      // Capturing a device an app holds re-enumerates it twice and the app grabs it
+      // back, so the mic flaps on every device listing. Ask the user instead.
+      let owner = text(service, "UsbExclusiveOwner")
+      if owner.hasPrefix("pid ") { throw USBError.message(exclusiveOwnerMessage(owner)) }
       do {
         device = try IOUSBHostDevice(
           __ioService: service, options: .deviceCapture, queue: nil, interestHandler: nil)
