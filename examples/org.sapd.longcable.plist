@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>org.sapd.longcable</string>
+<key>ProgramArguments</key><array>
+<string>/Library/Application Support/Longcable/longcable-server</string>
+<string>0.0.0.0</string>
+<string>192.168.1.20,192.168.1.21</string>
+</array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>5</integer>
+<key>StandardOutPath</key><string>/Library/Logs/Longcable/launchd.log</string>
+<key>StandardErrorPath</key><string>/Library/Logs/Longcable/launchd.log</string>
+</dict></plist>
