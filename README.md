@@ -230,11 +230,27 @@ Experimentally. An Elgato Wave:3 works on Windows, including in Discord; see
 
 ## Alternatives
 
-- **[VirtualHere](https://www.virtualhere.com):** the established commercial option, with
-  its own server and client for macOS, Windows and Linux. It is closed source and
-  needs a paid license to share more than one device. Longcable is a free, open-source
-  alternative that speaks standard USB/IP, so it works with the signed usbip-win2 client
-  and Linux's built-in `usbip`.
+### Longcable as a VirtualHere alternative for Mac
+
+[VirtualHere](https://www.virtualhere.com) is the established commercial way to share
+USB devices from a Mac over the network. Longcable is a free, open-source alternative
+for the same job:
+
+| | Longcable | VirtualHere |
+|---|---|---|
+| Price | free | free for one device, paid license for more |
+| Source | open source (GPL-3.0) | closed source |
+| Protocol | standard USB/IP | its own protocol |
+| Client on Windows | usbip-win2 (free, signed drivers) | VirtualHere client |
+| Client on Linux | built-in `usbip` | VirtualHere client |
+| Mac server | native, IOUSBHost, no kernel extension | yes |
+| USB audio and webcams | audio experimental, webcams untested | supported |
+
+VirtualHere is more mature, especially for audio and video devices. Longcable is a good
+fit if you want free, open source and standard USB/IP, for example for HOTAS sticks,
+eye trackers and controllers.
+
+### Others
 - **[usbipd-win](https://github.com/dorssel/usbipd-win):** the same idea in the other
   direction, sharing devices *from* a Windows PC.
 
