@@ -243,7 +243,8 @@ for the same job:
 | Protocol | standard USB/IP | its own protocol |
 | Client on Windows | usbip-win2 (free, signed drivers) | VirtualHere client |
 | Client on Linux | built-in `usbip` | VirtualHere client |
-| Mac server | native, IOUSBHost, no kernel extension | yes |
+| Mac server (share devices *from* a Mac) | native, IOUSBHost, no kernel extension | yes |
+| Mac client (use remote devices *on* a Mac) | **not supported** | yes |
 | USB audio and webcams | audio experimental, webcams untested | supported |
 
 VirtualHere is more mature, especially for audio and video devices. Longcable is a good
@@ -277,6 +278,9 @@ eye trackers and controllers.
 
 ## Limitations
 
+- **Mac as client is not supported.** Longcable only shares devices *from* a Mac. Using
+  a remote USB device *on* a Mac would need a virtual USB host controller, which macOS
+  doesn't offer to third-party software without a kernel or DriverKit extension.
 - **Isochronous transfers (USB audio) are EXPERIMENTAL.** Tested with an Elgato Wave:3
   microphone on Windows: recording works, including in Discord, with no dropouts on
   Tailscale, and repeated start/stop works. Webcams are untested.
