@@ -115,6 +115,16 @@ is allowed by the peer list can take your shared devices.
 The peer argument takes one IPv4, a comma-separated list, or `any` (prints a loud
 warning).
 
+## Alternatives
+
+- **[VirtualHere](https://www.virtualhere.com):** the established commercial option, with
+  its own server and client for macOS, Windows and Linux. It is closed source and
+  needs a paid license to share more than one device. Longcable is a free, open-source
+  alternative that speaks standard USB/IP, so it works with the signed usbip-win2 client
+  and Linux's built-in `usbip`.
+- **[usbipd-win](https://github.com/dorssel/usbipd-win):** the same idea in the other
+  direction, sharing devices *from* a Windows PC.
+
 ## Reference
 
 - Settings: `/Library/Application Support/Longcable/`. Logs: `/Library/Logs/Longcable/`.
@@ -141,8 +151,9 @@ up to 16 devices. Sleep/wake and long sessions need more testing.
 > testing and responsibility are mine.
 >
 > I've been an open-source developer for years: see [my GitHub profile](https://github.com/Sapd)
-> and projects like [HeadsetControl](https://github.com/Sapd/HeadsetControl) or the OIDC
-> login implementation in [Audiobookshelf](https://github.com/advplyr/audiobookshelf).
+> and projects like [HeadsetControl](https://github.com/Sapd/HeadsetControl) or
+> [my OIDC login work](https://github.com/advplyr/audiobookshelf/pulls?q=is%3Apr+author%3ASapd)
+> in [Audiobookshelf](https://github.com/advplyr/audiobookshelf).
 
 ## License
 
