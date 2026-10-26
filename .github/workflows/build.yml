@@ -21,7 +21,9 @@ jobs:
           swift build -c release --disable-sandbox
           scripts/test-install.sh
 
-      - name: Package universal binaries
+      - name: Package universal binaries and Longcable.app
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
         run: scripts/package-release.sh
 
       - uses: actions/upload-artifact@v4
