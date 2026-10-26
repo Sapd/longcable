@@ -170,8 +170,24 @@ warning).
   `longcable-macos.tar.gz` (with a SHA-256 file) to a GitHub release. The binaries are
   not notarized; downloading with `curl` as shown above avoids the Gatekeeper prompt.
 
-**Limits:** no isochronous transfers (webcams, audio devices), alternate setting 0 only,
-up to 16 devices. Sleep/wake and long sessions need more testing.
+## Limitations
+
+- **No isochronous transfers.** Webcams, microphones, USB audio interfaces and headsets
+  won't work. Input devices like joysticks, eye trackers, controllers and keyboards
+  are fine.
+- **Alternate setting 0 only.** Devices that switch interface modes may fail.
+- **Identical devices without a serial number:** two units of the same model (same
+  VID:PID, no serial) can't be shared at the same time.
+- **Up to 16 devices**, 1 MiB per transfer.
+- **Shared devices disappear from the Mac** while a client is attached. That's how
+  device capture works.
+- **Root required.** The server runs as a launchd system service.
+- **No security of its own.** USB/IP has no authentication or encryption; see
+  [Network](#network-tailscale-or-lan).
+- **Not notarized.** Downloading through a browser triggers Gatekeeper; use `curl` as
+  shown above.
+- **Less tested:** Mac sleep/wake, very long sessions and Linux clients. Tested hardware
+  is listed above; other devices may well work but haven't been tried.
 
 ## AI transparency
 
