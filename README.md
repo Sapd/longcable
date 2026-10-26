@@ -27,9 +27,25 @@ My setup, all running through Longcable:
 | Tobii Eye Tracker 5 | `2104:0313` | head tracking |
 | Steam Controller puck | `28de:1304` | controller receiver |
 
-Tested on an Apple Silicon Mac (macOS 27) with Windows 11 and usbip-win2 0.9.8.1:
-both sticks and the eye tracker running at the same time, unplug/replug on the Mac,
-server restarts, network drops and Windows reboots.
+## What has been tested
+
+On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8.1:
+
+| Test | Result |
+|---|---|
+| Both VKB sticks and the eye tracker at the same time | all recognised by Windows as game controllers, no transfer errors on the sticks |
+| Input check over 20 seconds | ~1,240 reads per stick, zero failures |
+| Unplug and replug a stick on the Mac | device left and came back on Windows by itself |
+| Moving a stick to another Mac USB port | same bus ID and the same device identity on Windows |
+| Killing the Longcable service | launchd restarted it; Windows reattached the devices |
+| Restarting the service | Windows reattached by itself after ~30 s |
+| 30-second network drop (Tailscale off) | the connection survived; nothing to reattach |
+| Rebooting Windows | stashed devices came back by themselves |
+| Both usbip-win2 receive modes | work; low-latency is used day to day |
+
+Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
+53 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+filter, peer allowlists) and 8 installer checks in a sandbox without sudo.
 
 ## How it works
 
@@ -45,13 +61,24 @@ port changes, so the Windows side can remember them.
 
 ### 1. Mac
 
-Requires macOS 13+ and the Xcode command-line tools (Swift 5.9+).
+Requires macOS 13 or later (Apple Silicon or Intel). Download the prebuilt release:
+
+```sh
+curl -LO https://github.com/Sapd/longcable/releases/latest/download/longcable-macos.tar.gz
+tar xzf longcable-macos.tar.gz && cd longcable
+bin/longcable-server list                # shows external devices, captures nothing
+```
+
+<details>
+<summary>Or build from source (Xcode command-line tools, Swift 5.9+)</summary>
 
 ```sh
 git clone https://github.com/Sapd/longcable.git && cd longcable
 swift build -c release
-swift run longcable-server list          # shows external devices, captures nothing
 ```
+
+Then use `swift run Longcable` instead of `bin/Longcable` below.
+</details>
 
 Install the background service. Arguments: the address to listen on, then which PCs may
 connect.
@@ -67,7 +94,7 @@ sudo scripts/install-mac.sh --skip-build 0.0.0.0 192.168.1.20,192.168.1.21
 Then pick the devices to share in the menu-bar app:
 
 ```sh
-swift run Longcable
+bin/Longcable &
 ```
 
 ### 2. Windows
@@ -138,7 +165,10 @@ warning).
   your MacBook's keyboard or trackpad.
 - Preview the install without sudo: `scripts/install-mac.sh --dry-run 0.0.0.0 192.168.1.20`.
 - Uninstall: `sudo scripts/uninstall-mac.sh`.
-- Development: `swift build`, `swift test`.
+- Development: `swift build`, `swift test`, `scripts/test-install.sh`.
+- Releases: pushing a `v*` tag builds universal binaries in GitHub Actions and attaches
+  `longcable-macos.tar.gz` (with a SHA-256 file) to a GitHub release. The binaries are
+  not notarized; downloading with `curl` as shown above avoids the Gatekeeper prompt.
 
 **Limits:** no isochronous transfers (webcams, audio devices), alternate setting 0 only,
 up to 16 devices. Sleep/wake and long sessions need more testing.

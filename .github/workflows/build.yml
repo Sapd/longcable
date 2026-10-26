@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: swift test --disable-sandbox
+
+      - name: Installer tests
+        run: |
+          swift build -c release --disable-sandbox
+          scripts/test-install.sh
+
+      - name: Package universal binaries
+        run: scripts/package-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: longcable-macos
+          path: |
+            dist/longcable-macos.tar.gz
+            dist/longcable-macos.tar.gz.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: longcable-macos
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Longcable $GITHUB_REF_NAME" --generate-notes \
+            longcable-macos.tar.gz longcable-macos.tar.gz.sha256

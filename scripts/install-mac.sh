@@ -27,12 +27,18 @@ elif ! $dry_run && [[ $EUID != 0 ]]; then
   echo 'Build first as your user, then run sudo scripts/install-mac.sh --skip-build ...' >&2
   exit 1
 fi
+# A release download ships a prebuilt binary in bin/; a source checkout builds one.
+binary="$project/bin/longcable-server"
+if [[ -x "$binary" ]]; then
+  skip_build=true
+else
+  binary="$project/.build/release/longcable-server"
+fi
 if ! $skip_build; then
   mkdir -p "$project/.build/tmp" "$project/.build/cache"
   export TMPDIR="$project/.build/tmp" CLANG_MODULE_CACHE_PATH="$project/.build/cache" SWIFTPM_MODULECACHE_OVERRIDE="$project/.build/cache"
   swift build -c release --disable-sandbox
 fi
-binary="$project/.build/release/longcable-server"
 "$binary" --validate "$@" >&2
 # These arguments have been validated: IPv4 addresses, hexadecimal IDs, alphanumeric labels.
 xml_escape() { printf '%s' "$1" | sed -e 's/\&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
