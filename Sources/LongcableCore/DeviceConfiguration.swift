@@ -42,6 +42,7 @@ struct StorePaths {
   let targets: String
   let state: String
   let launchDaemon: String
+  var peers: String { (state as NSString).deletingLastPathComponent + "/peers.json" }
   static let live = StorePaths(targets: Paths.targets, state: Paths.state,
     launchDaemon: "/Library/LaunchDaemons/org.sapd.longcable.plist")
 }
@@ -76,6 +77,7 @@ private func startupTargets(at store: StorePaths) throws -> [TargetConfig] {
   return try DaemonConfig(arguments: Array(arguments.dropFirst())).targets
 }
 func preflightInstall(config: DaemonConfig, store: StorePaths) throws -> [TargetConfig] {
+  _ = try savedPeers(at: store)
   let oldStartup = try startupTargets(at: store)
   let existing = try reconciledTargets(saved: savedTargets(at: store) ?? [], startup: oldStartup)
   _ = try savedSharing(at: store)

@@ -5,6 +5,11 @@
 your Mac and use it on a Windows (or Linux) PC over the network, as if it were plugged
 in there.
 
+USB/IP is built into Linux for sharing and using devices. Windows has
+[usbipd-win](https://github.com/dorssel/usbipd-win) for sharing and
+[usbip-win2](https://github.com/vadimgrn/usbip-win2) for using them. The Mac was the
+gap: no free, working USB/IP server. Longcable fills exactly that gap.
+
 It uses Apple's own IOUSBHost device capture: no kernel extension, no DriverKit
 entitlement and no SIP changes. On Windows you use the official, signed
 [usbip-win2](https://github.com/vadimgrn/usbip-win2) client, so there's nothing extra
@@ -45,15 +50,12 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | Restarting the service | Windows reattached by itself after ~30 s |
 | 30-second network drop (Tailscale off) | the connection survived; nothing to reattach |
 | Rebooting Windows | stashed devices came back by themselves |
-| Both usbip-win2 receive modes | work; low-latency is used day to day |
-| Normal Star Citizen sessions | hours of gaming with both sticks and the eye tracker |
-
-Beyond these specific checks, it is in daily use: I play Star Citizen with it for hours
-at a time.
+| Both usbip-win2 receive modes | work; low-latency is the one I use |
+| A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
-62 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
-filter, peer allowlists) and 8 installer checks in a sandbox without sudo.
+73 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+filter, peer allowlists) and 16 installer checks in a sandbox without sudo.
 
 ## How it works
 
@@ -66,6 +68,37 @@ when you stop sharing. Bus IDs (`1-1`, `1-2`, …) stay stable across reconnects
 port changes, so the Windows side can remember them.
 
 ## Setup
+
+### Quick start
+
+Requires macOS 13 or later (Apple Silicon or Intel). On the Mac:
+
+```sh
+curl -fsSL https://github.com/Sapd/longcable/releases/latest/download/install.sh | bash
+```
+
+The installer verifies the release checksum, installs the background service and
+opens Longcable. It allows your tailnet if Tailscale is running, otherwise your
+primary LAN subnet. It prints the choice and how to override it.
+
+1. Tick the devices you want to share in the app.
+2. Click **Connect a PC**, choose Tailscale or LAN, and copy the Windows command.
+3. Paste it into an **administrator PowerShell** on the PC. It installs usbip-win2
+   with winget if needed, attaches shared devices and remembers them.
+4. If a connection is refused, click **Allow** on the Mac, then retry the command.
+
+### Windows
+
+**No extra client needed.** usbip-win2 is reliable, signed and already remembers your devices across reboots and dropped connections - there's no wrapper app, no background service and nothing else running on your gaming PC.
+
+Prefer a GUI? Open usbip-win2's own **USBip** app (`wusbip.exe`, in
+`C:\Program Files\USBip`). Enter the Mac address under **Server** → **Add devices** →
+select the devices → **Attach**. Tick **Auto** → **Save** to remember them.
+
+<img src="Artwork/windows-usbip-app.png" width="600" alt="usbip-win2 USBip app: server address, device attachment and Auto setting">
+
+<details>
+<summary>Manual setup</summary>
 
 ### 1. Mac
 
@@ -132,8 +165,7 @@ Set-ItemProperty $p ReattachMaxAttempts 1000 -Type DWord
 Set-ItemProperty $p ReattachFirstDelay 5 -Type DWord
 ```
 
-**Linux:** `sudo modprobe vhci-hcd`, then `usbip list -r MAC_IP` and
-`sudo usbip attach -r MAC_IP -b 1-1`.
+</details>
 
 ## Network: Tailscale or LAN
 
@@ -148,8 +180,13 @@ is allowed by the peer list can take your shared devices.
 - **Over the internet without a VPN: don't.** Never forward port 3240 on your router. Use
   Tailscale or WireGuard instead.
 
-The peer argument takes one IPv4, a comma-separated list, or `any` (prints a loud
-warning).
+The peer argument takes IPv4 addresses or CIDR ranges (`192.168.1.0/24`,
+`100.64.0.0/10`), a comma-separated mix, or `any` (prints a loud warning).
+With no arguments the installer listens on `0.0.0.0` and allows the tailnet when
+Tailscale is available, otherwise the primary LAN subnet. Use explicit arguments
+in Manual setup to restrict this further. Refused PCs appear in the app with an
+**Allow** button; click it only for a PC you recognise. These extra peers are saved
+in `peers.json` and merged with the configured peers across restarts.
 
 ## Alternatives
 
@@ -166,7 +203,9 @@ warning).
 - Settings: `/Library/Application Support/Longcable/`. Logs: `/Library/Logs/Longcable/`.
   Service: launchd `org.sapd.longcable`.
 - Local control: `longcable-server --control status|share|unshare|reconnect [BUSID]`
-  (root or the signed-in console user).
+  or `longcable-server --control allow-peer|forget-peer IPV4_OR_CIDR`
+  (changes require root or the signed-in console user). Forget removes saved additions;
+  it does not remove peers supplied in the launchd arguments.
 - Fixed devices can be given as extra `VID PID LOCATION LABEL` groups, e.g.
   `231d 0201 02131200 VKBLEFT0201`. Their order fixes the bus IDs. Devices without a
   hardware serial number get the label as a stable software serial. Identical models
@@ -211,6 +250,59 @@ warning).
 > Connect login in [Audiobookshelf](https://github.com/advplyr/audiobookshelf), which I
 > took over from [its first implementation](https://github.com/advplyr/audiobookshelf/pull/1636)
 > and have continued since ([my PRs](https://github.com/advplyr/audiobookshelf/pulls?q=is%3Apr+author%3ASapd)).
+
+<details>
+<summary>Linux and other platforms</summary>
+
+| Platform | Sharing devices | Using devices |
+|---|---|---|
+| macOS | Longcable | Third-party client required |
+| Linux | Built-in `usbip-host` + `usbipd` | Built-in `vhci-hcd` + `usbip` |
+| Windows | [usbipd-win](https://github.com/dorssel/usbipd-win) | [usbip-win2](https://github.com/vadimgrn/usbip-win2) |
+
+**Linux client:** install your distribution's `usbip` tools, then:
+
+```sh
+sudo modprobe vhci-hcd
+usbip list -r MAC_IP
+sudo usbip attach -r MAC_IP -b 1-1
+```
+
+Linux has no built-in stash. Use a script or systemd unit to attach at boot, for
+example `/etc/systemd/system/longcable.service` (replace `MAC_IP` and `1-1`):
+
+```ini
+[Unit]
+Description=Attach Longcable USB device
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/sbin/modprobe vhci-hcd
+ExecStart=/usr/sbin/usbip attach -r MAC_IP -b 1-1
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Check your distribution's executable paths, then enable with
+`sudo systemctl enable --now longcable`. This retries failed boot attachments;
+a separate reconnect script is needed to detect a connection lost later. Linux
+clients are still less tested.
+
+**Linux server:** Longcable is not needed. Load `usbip-host`, run `sudo usbipd -D`,
+find the device with `usbip list -l`, and share it with
+`sudo usbip bind -b BUSID`. Use the same trusted-network precautions as above.
+
+**Windows server:** use usbipd-win; `usbipd list` shows devices and
+`usbipd bind --busid BUSID` shares one from an administrator terminal. Longcable
+is the server for the opposite direction, from a Mac.
+
+</details>
 
 ## License
 

@@ -12,8 +12,6 @@ import LongcableCore
   @Published var online = false
   @Published var showInDock = (UserDefaults.standard.object(forKey: "showInDock") as? Bool) ?? true
   @Published var setupIssue: String?
-  @Published var localAddress = ""
-  @Published var peerAddress = ""
   @Published var showingSetup = false
   private var polling = false
   private var pollTask: Task<Void, Never>?
@@ -62,6 +60,20 @@ import LongcableCore
         } else {
           error = reply.message
         }
+      case .failure(let failure): error = String(describing: failure)
+      }
+      await refresh()
+    }
+  }
+  func allowPeer(_ address: String) {
+    guard !busy.contains(address) else { return }
+    busy.insert(address)
+    Task {
+      defer { busy.remove(address) }
+      switch await request(ControlRequest(action: "allow-peer", peer: address)) {
+      case .success(let reply):
+        if reply.ok { status = reply.status; notice = reply.message; error = nil }
+        else { error = reply.message }
       case .failure(let failure): error = String(describing: failure)
       }
       await refresh()
@@ -157,11 +169,7 @@ struct MenuContent: View {
       openWindow(id: "devices")
       NSApp.activate(ignoringOtherApps: true)
     }
-    Button("Connection Setup…") {
-      if let status = model.status {
-        model.localAddress = status.listen
-        model.peerAddress = status.peer
-      }
+    Button("Connect a PC…") {
       model.showingSetup = true
       openWindow(id: "devices")
       NSApp.activate(ignoringOtherApps: true)
@@ -207,16 +215,13 @@ struct SharingView: View {
             VStack(alignment: .leading, spacing: 4) {
               Text("\(connected) devices connected").font(.headline)
               if let status = model.status {
-                Text("Windows PC · \(status.peer)").font(.caption).foregroundStyle(.secondary)
-                Button("Copy Mac Address") {
-                  NSPasteboard.general.clearContents()
-                  NSPasteboard.general.setString(status.listen, forType: .string)
-                }.buttonStyle(.link).font(.caption)
+                Text("Allowed peers · \((status.allowedPeers ?? [status.peer]).joined(separator: ", "))")
+                  .font(.caption).foregroundStyle(.secondary)
               }
             }
             Spacer()
+            Button("Connect a PC") { model.showingSetup = true }
             Button {
-              if let status = model.status { model.localAddress = status.listen; model.peerAddress = status.peer }
               model.showingSetup = true
             } label: { Image(systemName: "gearshape") }.help("Connection Setup").accessibilityLabel("Connection Setup")
             Button {
@@ -224,6 +229,13 @@ struct SharingView: View {
             } label: {
               Image(systemName: "arrow.clockwise")
             }.help("Refresh status")
+          }
+          if let peer = model.status?.refusedPeers?.first {
+            HStack {
+              Text("\(peer.address) tried to connect ·")
+              Button("Allow") { model.allowPeer(peer.address) }.disabled(!model.online || model.busy.contains(peer.address))
+            }.font(.callout).padding(10)
+              .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
           }
           if let error = model.error {
             Label(error, systemImage: "exclamationmark.triangle.fill").font(.callout)
@@ -269,7 +281,7 @@ struct SharingView: View {
         VStack(alignment: .trailing) {
           SetupView(model: model)
           Button("Done") { model.showingSetup = false }.padding(.trailing, 20).padding(.bottom, 12)
-        }.frame(width: 500).fixedSize(horizontal: false, vertical: true)
+        }.frame(width: 620).fixedSize(horizontal: false, vertical: true)
       }
 
   }

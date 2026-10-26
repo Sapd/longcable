@@ -10,6 +10,9 @@ public final class USBServer {
   let consoleUID: () -> uid_t?
   let inventory: () -> [LocalUSBDevice]
   let log: (String) -> Void
+  private let peerLock = NSLock()
+  private var extraPeers = [String]()
+  private var refused = [RefusedPeer]()
   private var targetStorage: [Target]
   private let targetLock = NSLock()
   var targets: [Target] { targetLock.withLock { targetStorage } }
@@ -55,6 +58,7 @@ public final class USBServer {
   }
   // Complete validation before exposing a listener or replacing the in-memory catalog.
   func loadPersistentState() throws {
+    let peers = try savedPeers(at: store)
     let saved = try savedTargets(at: store)
     let catalog = try reconciledTargets(saved: saved ?? [], startup: config.targets)
     let enabled = try savedSharing(at: store)
@@ -68,6 +72,7 @@ public final class USBServer {
         target.setEnabled(value)
       }
     }
+    peerLock.withLock { extraPeers = peers }
     targetLock.withLock { targetStorage = restored }
   }
   func status() -> ServerStatus {
@@ -79,6 +84,8 @@ public final class USBServer {
       devices: zip(snapshot, matching).map { target, match in
         target.snapshot(present: detected.contains { match.matches($0) })
       },
+      refusedPeers: peerLock.withLock { refused },
+      allowedPeers: peerLock.withLock { mergedPeers(startup: config.peer, extra: extraPeers) },
       availableDevices: detected.filter { device in !matching.contains { $0.matches(device) } }
     )
   }
@@ -177,7 +184,11 @@ public final class USBServer {
         continue
       }
       let c = Connection(client)
-      guard config.allowsPeer(peer.sin_addr), slots.wait(timeout: .now()) == .success else {
+      guard acceptPeer(peer.sin_addr) else {
+        c.closeSocket()
+        continue
+      }
+      guard slots.wait(timeout: .now()) == .success else {
         c.closeSocket()
         continue
       }
@@ -206,6 +217,20 @@ public final class USBServer {
         }
         autoreleasepool { handleClient(c) }
       }
+    }
+  }
+  // Admission and refused history share one lock with allow/forget updates.
+  func acceptPeer(_ address: in_addr, now: Date = Date()) -> Bool {
+    peerLock.withLock {
+      if config.allowsPeer(address) || extraPeers.contains(where: {
+        (try? IPv4Peer($0))?.contains(address) == true
+      }) { return true }
+      let value = address
+      let ip = String(cString: inet_ntoa(value))
+      refused.removeAll { $0.address == ip }
+      refused.insert(RefusedPeer(address: ip, timestamp: now), at: 0)
+      refused = Array(refused.prefix(10))
+      return false
     }
   }
   func handleClient(_ c: Connection) {
@@ -266,6 +291,29 @@ public final class USBServer {
         ok: false, message: "Only the signed-in Mac user can change sharing", status: nil)
     }
     return settings.withLock {
+      if request.action == "allow-peer" || request.action == "forget-peer" {
+        do {
+          guard let peer = request.peer else { throw USBError.message("Choose an IPv4 or CIDR peer") }
+          _ = try IPv4Peer(peer)
+          try peerLock.withLock {
+            var updated = extraPeers
+            updated.removeAll { $0 == peer }
+            if request.action == "allow-peer" {
+              guard updated.count < 256 else { throw USBError.message("The 256 extra-peer limit was reached") }
+              updated.append(peer)
+            }
+            try savePeers(updated, at: store)
+            extraPeers = updated
+            refused.removeAll { item in
+              var address = in_addr()
+              return inet_pton(AF_INET, item.address, &address) == 1
+                && (config.allowsPeer(address) || updated.contains { (try? IPv4Peer($0))?.contains(address) == true })
+            }
+          }
+          return ControlReply(ok: true,
+            message: "Allowed peers updated. Clients can retry now. Startup peers remain allowed.", status: status())
+        } catch { return ControlReply(ok: false, message: String(describing: error), status: nil) }
+      }
       if request.action == "add" {
         do {
           guard let selected = request.device else {

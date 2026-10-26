@@ -18,7 +18,10 @@ for points in 16 32 128 256 512; do
   sips -z "$points" "$points" Artwork/AppIconMaster.png --out "$art/AppIcon.iconset/icon_${points}x${points}.png" >/dev/null
   sips -z $((points*2)) $((points*2)) Artwork/AppIconMaster.png --out "$art/AppIcon.iconset/icon_${points}x${points}@2x.png" >/dev/null
 done
-iconutil -c icns "$art/AppIcon.iconset" -o "$art/LongcableAppIcon.icns"
+if ! iconutil -c icns "$art/AppIcon.iconset" -o "$art/LongcableAppIcon.icns"; then
+  echo 'iconutil unavailable; packing and verifying PNG-backed ICNS with Swift' >&2
+  swift Artwork/make-icons.swift "$art" --icns
+fi
 swift Artwork/make-icons.swift "$art"
 
 rm -rf dist && mkdir -p dist/longcable/bin dist/longcable/scripts
@@ -46,7 +49,7 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app"
 
 install -m 755 "$bin/longcable-server" dist/longcable/bin/
-install -m 755 scripts/install-mac.sh scripts/uninstall-mac.sh dist/longcable/scripts/
+install -m 755 scripts/install-mac.sh scripts/uninstall-mac.sh scripts/install.sh scripts/setup-windows.ps1 dist/longcable/scripts/
 install -m 644 README.md LICENSE dist/longcable/
 lipo -info dist/longcable/bin/longcable-server "$app/Contents/MacOS/Longcable"
 codesign --verify --strict "$app" && echo "Longcable.app $version signature OK (ad-hoc)"
@@ -54,3 +57,6 @@ dist/longcable/bin/longcable-server --validate 127.0.0.1 127.0.0.2
 tar -C dist -czf dist/longcable-macos.tar.gz longcable
 (cd dist && shasum -a 256 longcable-macos.tar.gz > longcable-macos.tar.gz.sha256)
 cat dist/longcable-macos.tar.gz.sha256
+
+install -m 755 scripts/install.sh dist/install.sh
+install -m 644 scripts/setup-windows.ps1 dist/setup-windows.ps1

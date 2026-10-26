@@ -27,10 +27,11 @@ do {
   }
   if args.first == "--control" {
     guard args.count >= 2 else {
-      throw USBError.message("--control status|share|unshare|reconnect [BUSID]")
+      throw USBError.message("--control status|share|unshare|reconnect [BUSID] or allow-peer|forget-peer IPV4_OR_CIDR")
     }
     let reply = try LocalControl.send(
-      ControlRequest(action: args[1], busID: args.count > 2 ? args[2] : nil))
+      ControlRequest(action: args[1], busID: args.count > 2 ? args[2] : nil,
+        peer: args.count > 2 ? args[2] : nil))
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     print(String(data: try encoder.encode(reply), encoding: .utf8)!)
@@ -44,7 +45,7 @@ do {
   }
   if args.first == "--help" || args.first == "help" || args.isEmpty {
     print(
-      "Longcable native Swift USB/IP server\nUsage: sudo longcable-server LISTEN_IPV4 PEER_IPV4[,PEER_IPV4...]|any [VID PID LOCATION LABEL ...]\nLocal controls: --control status|share|unshare|reconnect [BUSID]\nGUI: org.sapd.longcable.app (independent of the background service)"
+      "Longcable native Swift USB/IP server\nUsage: sudo longcable-server LISTEN_IPV4 PEERS (IPv4, CIDR, comma list, or any) [VID PID LOCATION LABEL ...]\nLocal controls: --control status|share|unshare|reconnect [BUSID] or allow-peer|forget-peer IPV4_OR_CIDR\nGUI: org.sapd.longcable.app (independent of the background service)"
     )
     exit(0)
   }

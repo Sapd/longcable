@@ -1,6 +1,6 @@
 // Copyright 2026 Denis Arnst (Sapd) — https://github.com/Sapd
 // Licensed under GPL-3.0-or-later; see LICENSE.
-// Draws the menu-bar template icon as a PDF into the given directory.
+// Draws the menu-bar template PDF; --icns packs the resized PNGs when IconServices is unavailable.
 import AppKit
 import Foundation
 
@@ -29,6 +29,33 @@ final class MenuMark: NSView {
 }
 let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory:true)
 try FileManager.default.createDirectory(at:output,withIntermediateDirectories:true)
+// PNG-backed ICNS chunks avoid IconServices when iconutil is unavailable in a sandbox.
+// https://github.com/fiahfy/icns documents the PNG type codes and container layout.
+if CommandLine.arguments.contains("--icns") {
+    func chunk(_ type: String, _ payload: Data) -> Data {
+        var result = Data(type.utf8)
+        var size = UInt32(payload.count + 8).bigEndian
+        withUnsafeBytes(of: &size) { result.append(contentsOf: $0) }
+        result.append(payload)
+        return result
+    }
+    let sizes = [("icp4", "16x16"), ("icp5", "32x32"),
+                 ("ic11", "16x16@2x"), ("ic12", "32x32@2x"),
+                 ("ic07", "128x128"), ("ic13", "128x128@2x"),
+                 ("ic08", "256x256"), ("ic14", "256x256@2x"),
+                 ("ic09", "512x512"), ("ic10", "512x512@2x")]
+    var contents = Data()
+    for (type, name) in sizes {
+        let png = try Data(contentsOf: output.appendingPathComponent("AppIcon.iconset/icon_\(name).png"))
+        guard NSBitmapImageRep(data: png) != nil else { fatalError("Invalid icon PNG: \(name)") }
+        contents.append(chunk(type, png))
+    }
+    let icon = chunk("icns", contents)
+    let path = output.appendingPathComponent("LongcableAppIcon.icns")
+    try icon.write(to: path)
+    guard NSImage(contentsOf: path) != nil else { fatalError("Could not decode packaged ICNS") }
+    exit(0)
+}
 let mark = MenuMark(frame:NSRect(x:0,y:0,width:24,height:24))
 let pdf = mark.dataWithPDF(inside:mark.bounds)
 try pdf.write(to:output.appendingPathComponent("LongcableMenuBarIconTemplate.pdf"))

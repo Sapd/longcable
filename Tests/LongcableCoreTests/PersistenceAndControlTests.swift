@@ -247,6 +247,21 @@ final class PersistenceAndControlTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: store.state))
   }
 
+  func testPeerControlsUseAuthenticatedSocketIdentity() throws {
+    let service = server(try DaemonConfig(arguments: arguments([])))
+    for (uid, action, expected) in [(uid_t(502), "allow-peer", false), (501, "allow-peer", true),
+                                   (502, "forget-peer", false), (0, "forget-peer", true)] {
+      let (daemon, client) = try pair()
+      defer { daemon.closeSocket(); client.closeSocket() }
+      try send(ControlRequest(action: action, peer: "10.0.0.1"), on: client)
+      ControlServer.serve(daemon, peerUID: { _ in uid }) { request, authenticatedUID in
+        service.handleControl(request, uid: authenticatedUID)
+      }
+      XCTAssertEqual(try reply(from: client).ok, expected)
+    }
+    XCTAssertEqual(try savedPeers(at: store), [])
+  }
+
   func testCredentialLookupFailureNeverDispatchesFramedRequest() throws {
     let (daemon, client) = try pair()
     try send(ControlRequest(action: "unshare", busID: "1-1"), on: client)

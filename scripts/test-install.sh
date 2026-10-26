@@ -35,4 +35,21 @@ test ! -e "$sandbox/root/Library/LaunchDaemons/org.sapd.longcable.plist"
 test ! -e "$sandbox/root/Library/Application Support/Longcable"
 test ! -e "$sandbox/root/Library/Logs/Longcable"
 echo 'PASS: dry-run uninstall and clean sandbox removal (2 checks)'
-echo '8 installer checks passed; no launchctl or sudo used'
+mkdir -p "$sandbox/fake-bin"
+cat > "$sandbox/fake-bin/tailscale" <<'FAKE'
+#!/bin/bash
+if [[ "$1" == ip && "$2" == -4 ]]; then echo 100.64.1.2; else exit 1; fi
+FAKE
+chmod +x "$sandbox/fake-bin/tailscale"
+PATH="$sandbox/fake-bin:$PATH" scripts/install-mac.sh --dry-run --skip-build > "$sandbox/tailscale.plist"
+LONGCABLE_LAN_ADDRESS=192.168.51.23 LONGCABLE_LAN_NETMASK=0xfffffe00 scripts/install-mac.sh --root "$sandbox/lan" --skip-build >/dev/null
+python3 - "$sandbox" <<'PYTEST'
+import pathlib, plistlib, sys
+p = pathlib.Path(sys.argv[1])
+tail = plistlib.loads((p/'tailscale.plist').read_bytes())
+lan = plistlib.loads((p/'lan/Library/LaunchDaemons/org.sapd.longcable.plist').read_bytes())
+assert tail['ProgramArguments'][1:] == ['0.0.0.0', '100.64.0.0/10']
+assert lan['ProgramArguments'][1:] == ['0.0.0.0', '192.168.50.0/23']
+print('PASS: no-argument Tailscale and LAN detection (2 checks)')
+PYTEST
+echo '10 installer checks passed; no launchctl or sudo used'

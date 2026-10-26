@@ -62,9 +62,8 @@ public struct DaemonConfig {
     allowsAnyPeer ? "WARNING: ANY PEER CAN CAPTURE SHARED USB DEVICES. USB/IP HAS NO AUTHENTICATION OR ENCRYPTION. Use a trusted LAN or Tailscale." : nil
   }
   public func allowsPeer(_ address: in_addr) -> Bool {
-    allowsAnyPeer || peer.split(separator: ",").contains { value in
-      var allowed = in_addr()
-      return inet_pton(AF_INET, String(value), &allowed) == 1 && allowed.s_addr == address.s_addr
+    allowsAnyPeer || peer.split(separator: ",").contains {
+      (try? IPv4Peer(String($0)))?.contains(address) == true
     }
   }
   init(loopbackTest: Void) {
@@ -78,17 +77,15 @@ public struct DaemonConfig {
       arguments.count == 2 || legacy
         || (arguments.count >= 6 && (arguments.count - 2) % 4 == 0
           && (arguments.count - 2) / 4 <= 16)
-    else { throw USBError.message("Expected LISTEN_IPV4 PEER_IPV4[,PEER_IPV4...]|any [VID PID LOCATION LABEL ...] ") }
+    else { throw USBError.message("Expected LISTEN_IPV4 PEERS (IPv4, CIDR, comma list, or any) [VID PID LOCATION LABEL ...] ") }
     var a = in_addr()
     guard inet_pton(AF_INET, arguments[0], &a) == 1 else {
       throw USBError.message("An IPv4 listen address is required")
     }
     let peers = arguments[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
     guard arguments[1] == "any" || (!peers.isEmpty && Set(peers).count == peers.count && peers.allSatisfy({ value in
-      var address = in_addr()
-      return inet_pton(AF_INET, value, &address) == 1 && address.s_addr != 0
-        && address.s_addr != UInt32.max
-    })) else { throw USBError.message("Supply one or more unique peer IPv4s separated by commas, or any") }
+      (try? IPv4Peer(value)) != nil
+    })) else { throw USBError.message("Supply unique IPv4 addresses or CIDR ranges separated by commas, or any") }
     listen = arguments[0]
     peer = arguments[1]
     var items = [TargetConfig]()
@@ -137,13 +134,17 @@ public struct ServerStatus: Codable, Sendable {
   public var listen: String
   public var peer: String
   public var devices: [DeviceStatus]
+  public var refusedPeers: [RefusedPeer]? = nil
+  public var allowedPeers: [String]? = nil
   public var availableDevices: [LocalUSBDevice]? = nil
 }
 public struct ControlRequest: Codable, Sendable {
   public var action: String
   public var busID: String?
+  public var peer: String?
   public var device: LocalUSBDevice?
-  public init(action: String, busID: String? = nil, device: LocalUSBDevice? = nil) {
+  public init(action: String, busID: String? = nil, device: LocalUSBDevice? = nil, peer: String? = nil) {
+    self.peer = peer
     self.action = action
     self.busID = busID
     self.device = device
