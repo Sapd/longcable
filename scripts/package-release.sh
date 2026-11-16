@@ -39,6 +39,11 @@ app=dist/longcable/Longcable.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 install -m 755 "$bin/Longcable" "$app/Contents/MacOS/Longcable"
 install -m 644 "$art/LongcableAppIcon.icns" "$art/LongcableMenuBarIconTemplate.pdf" "$app/Contents/Resources/"
+# Translations: English is the development language; Localization/ holds the others.
+for lproj in Localization/*.lproj; do
+  mkdir -p "$app/Contents/Resources/$(basename "$lproj")"
+  install -m 644 "$lproj"/*.strings "$app/Contents/Resources/$(basename "$lproj")/"
+done
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -46,6 +51,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>Longcable</string>
 <key>CFBundleDisplayName</key><string>Longcable</string>
 <key>CFBundleIdentifier</key><string>org.sapd.longcable.app</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>de</string></array>
 <key>CFBundleExecutable</key><string>Longcable</string>
 <key>CFBundleIconFile</key><string>LongcableAppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>

@@ -107,7 +107,7 @@ enum MicServiceReply: Equatable {
   // A service from before Longcable Mic answers the unknown action this way.
   static func message(for reply: String) -> String {
     reply == "Unknown device" || reply == "Unknown action"
-      ? "Update the Longcable service to use Longcable Mic (run the installer again)." : reply
+      ? String(localized: "Update the Longcable service to use Longcable Mic (run the installer again).") : serviceText(reply)
   }
 
   func selectInput(_ uid: String?) {

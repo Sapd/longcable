@@ -36,11 +36,11 @@ import LongcableCore
     case .success(let reply):
       status = reply.status
       online = reply.ok
-      if reply.ok { error = nil } else { error = reply.message }
+      if reply.ok { error = nil } else { error = serviceText(reply.message) }
       if reply.ok { await MicSharingModel.shared.reconcile(service: reply.status?.virtualMic?.enabled) }
     case .failure(let failure):
       online = false
-      error = String(describing: failure)
+      error = serviceText(String(describing: failure))
     }
   }
   func request(_ request: ControlRequest) async -> Result<ControlReply, Error> {
@@ -58,13 +58,13 @@ import LongcableCore
       switch await request(ControlRequest(action: action, busID: busID)) {
       case .success(let reply):
         if reply.ok {
-          notice = reply.message
+          notice = serviceText(reply.message)
           error = nil
           if let value = reply.status { status = value }
         } else {
-          error = reply.message
+          error = serviceText(reply.message)
         }
-      case .failure(let failure): error = String(describing: failure)
+      case .failure(let failure): error = serviceText(String(describing: failure))
       }
       await refresh()
     }
@@ -76,9 +76,9 @@ import LongcableCore
       defer { busy.remove(address) }
       switch await request(ControlRequest(action: "allow-peer", peer: address)) {
       case .success(let reply):
-        if reply.ok { status = reply.status; notice = reply.message; error = nil }
-        else { error = reply.message }
-      case .failure(let failure): error = String(describing: failure)
+        if reply.ok { status = reply.status; notice = serviceText(reply.message); error = nil }
+        else { error = serviceText(reply.message) }
+      case .failure(let failure): error = serviceText(String(describing: failure))
       }
       await refresh()
     }
@@ -92,12 +92,12 @@ import LongcableCore
       switch await request(ControlRequest(action: "add", device: device)) {
       case .success(let reply):
         if reply.ok {
-          notice = reply.message
+          notice = serviceText(reply.message)
           status = reply.status
         } else {
-          error = reply.message
+          error = serviceText(reply.message)
         }
-      case .failure(let failure): error = String(describing: failure)
+      case .failure(let failure): error = serviceText(String(describing: failure))
       }
       await refresh()
     }
@@ -124,8 +124,8 @@ import LongcableCore
       try
         ("Longcable diagnostics\n\(Date())\n\n\(state)\n\nRecent service log\n\(String(log.suffix(131072)))\n")
         .write(to: url, atomically: true, encoding: .utf8)
-      notice = "Diagnostics saved"
-    } catch { self.error = "Could not export diagnostics: \(error)" }
+      notice = String(localized: "Diagnostics saved")
+    } catch { self.error = String(localized: "Could not export diagnostics: \(String(describing: error))") }
   }
 }
 @MainActor func showAbout() {
@@ -154,7 +154,7 @@ import LongcableCore
 }
 private extension DeviceStatus {
   var displayState: String {
-    state == "Waiting for Windows" ? "Not attached by a PC yet" : state
+    state == "Waiting for Windows" ? String(localized: "Not attached by a PC yet") : serviceText(state)
   }
 }
 struct MenuContent: View {
@@ -315,7 +315,7 @@ struct AvailableDeviceRow: View {
     HStack {
       Image(systemName: deviceSymbol(device.kind)).foregroundStyle(.secondary).frame(width: 22)
       VStack(alignment: .leading) {
-        Text(device.name.isEmpty ? "USB device" : device.name).foregroundStyle(.primary)
+        Text(device.name.isEmpty ? String(localized: "USB device") : device.name).foregroundStyle(.primary)
         Text(device.vendor + ":" + device.product).font(.caption).foregroundStyle(.secondary)
       }
       Spacer()
@@ -347,14 +347,14 @@ struct DeviceCard: View {
           Text(device.name).font(.headline)
           HStack(spacing: 5) {
             Circle().fill(connected ? .green : .secondary).frame(width: 6, height: 6)
-            Text(model.online ? device.displayState : "Waiting for sharing service").font(.caption).foregroundStyle(.secondary)
+            Text(model.online ? device.displayState : String(localized: "Waiting for sharing service")).font(.caption).foregroundStyle(.secondary)
           }
           if model.online && device.state == "Waiting for Windows" {
             Text("Run the Windows command on your PC, or wait if it is reconnecting.")
               .font(.caption).foregroundStyle(.secondary)
           }
           if !connected, let error = device.lastError, error.hasPrefix("In use by") || error.hasPrefix("Another app") {
-            Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            Label(serviceText(error), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
           }
         }
         Spacer()
@@ -369,7 +369,7 @@ struct DeviceCard: View {
       HStack {
         Text(
           ByteCountFormatter.string(
-            fromByteCount: Int64(clamping: device.bytes), countStyle: .binary) + " transferred"
+            fromByteCount: Int64(clamping: device.bytes), countStyle: .binary) + " " + String(localized: "transferred")
         ).font(.caption).foregroundStyle(.secondary)
         Spacer()
         Button(details ? "Hide Details" : "Details") { details.toggle() }.buttonStyle(.plain).font(
@@ -390,12 +390,12 @@ struct DeviceCard: View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 5) {
           row("Identity", device.serial)
           row("Device", device.model + " · " + device.id)
-          row("Transfers", "\(device.completed) completed · \(device.pending) pending")
+          row("Transfers", String(localized: "\(device.completed) completed · \(device.pending) pending"))
           row("Errors", "\(device.errors)")
           if let last = device.lastActivity {
             row("Last USB activity", last.formatted(date: .omitted, time: .standard))
           }
-          if let error = device.lastError { row("Recent error", error) }
+          if let error = device.lastError { row("Recent error", serviceText(error)) }
         }.font(.caption).textSelection(.enabled)
       }
     }.padding(16).background(
@@ -403,7 +403,7 @@ struct DeviceCard: View {
     )
     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.07)))
   }
-  func row(_ title: String, _ value: String) -> some View {
+  func row(_ title: LocalizedStringKey, _ value: String) -> some View {
     GridRow {
       Text(title).foregroundStyle(.secondary)
       Text(value)

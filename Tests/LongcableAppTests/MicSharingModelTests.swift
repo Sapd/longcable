@@ -21,8 +21,23 @@ final class FakeFeeder: MicFeeding {
 }
 
 @MainActor final class MicSharingModelTests: XCTestCase {
+  // Each test gets its own settings, removed again afterwards (they would otherwise
+  // pile up in ~/Library/Preferences).
+  private var suites = [String]()
+  override func tearDown() async throws {
+    let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences")
+    for name in suites {
+      // Flush, then delete. (Clearing the domain first makes cfprefsd write an
+      // empty file back later.)
+      CFPreferencesSynchronize(name as CFString, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+      try? FileManager.default.removeItem(at: folder.appendingPathComponent(name + ".plist"))
+    }
+    suites.removeAll()
+  }
   private func defaults(enabled: Bool) -> UserDefaults {
-    let d = UserDefaults(suiteName: "longcable-test-\(UUID().uuidString)")!
+    let name = "longcable-test-\(UUID().uuidString)"
+    suites.append(name)
+    let d = UserDefaults(suiteName: name)!
     d.set(enabled, forKey: "virtualMicEnabled")
     return d
   }

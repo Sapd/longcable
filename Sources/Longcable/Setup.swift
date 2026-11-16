@@ -25,8 +25,8 @@ struct SetupView: View {
           ? "Copy one command and run it on your Windows PC. After you share, stop sharing or add devices on this Mac, run the same command again: the PC then matches this Mac."
           : "Tick devices (and choose a microphone) in the main window, then run these commands on your PC.")
           .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        Text("Tailscale: \(addresses.tailscaleIP ?? "unavailable")\(addresses.magicDNS.map { " · " + $0 } ?? "")")
-        Text("LAN: \(addresses.lanIP ?? "unavailable")")
+        Text("Tailscale: \(addresses.tailscaleIP ?? String(localized: "unavailable"))\(addresses.magicDNS.map { " · " + $0 } ?? "")")
+        Text("LAN: \(addresses.lanIP ?? String(localized: "unavailable"))")
         Picker("Network", selection: $tailscale) {
           Text("Tailscale").tag(true)
           Text("LAN").tag(false)
@@ -111,14 +111,14 @@ struct SetupView: View {
           Label(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "doc.on.doc")
             .frame(minWidth: 140)
         }.buttonStyle(.borderedProminent).controlSize(.large)
-        Text(sharedNames.isEmpty ? "Nothing is shared yet." : "Connects: " + sharedNames.joined(separator: ", "))
+        Text(sharedNames.isEmpty ? String(localized: "Nothing is shared yet.") : String(localized: "Connects: \(sharedNames.joined(separator: ", "))"))
           .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       }
     }.padding(14)
       .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
       .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.35)))
   }
-  func command(_ title: String, _ text: String) -> some View {
+  func command(_ title: LocalizedStringKey, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
         Text(title).font(.headline)

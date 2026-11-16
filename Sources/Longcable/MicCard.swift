@@ -40,19 +40,19 @@ extension SharingModel {
       var failure: String?
       switch step {
       case .ensurePermission:
-        if !(await mic.ensurePermission()) { failure = "Longcable may not use the microphone. Allow it in System Settings, then try again." }
+        if !(await mic.ensurePermission()) { failure = String(localized: "Longcable may not use the microphone. Allow it in System Settings, then try again.") }
       case .micOn:
         await mic.apply(true)
-        if !mic.enabled { failure = mic.error ?? "Couldn't turn on Longcable Mic." }
+        if !mic.enabled { failure = mic.error ?? String(localized: "Couldn't turn on Longcable Mic.") }
       case .micOff:
         await mic.apply(false)
-        if mic.enabled { failure = mic.error ?? "Couldn't turn off Longcable Mic." }
+        if mic.enabled { failure = mic.error ?? String(localized: "Couldn't turn off Longcable Mic.") }
       case .share(let id):
-        if !(await perform(ControlRequest(action: "share", busID: id))) { failure = error ?? "Couldn't share the microphone." }
+        if !(await perform(ControlRequest(action: "share", busID: id))) { failure = error ?? String(localized: "Couldn't share the microphone.") }
       case .unshare(let id):
-        if !(await perform(ControlRequest(action: "unshare", busID: id))) { failure = error ?? "Couldn't stop sharing the microphone." }
+        if !(await perform(ControlRequest(action: "unshare", busID: id))) { failure = error ?? String(localized: "Couldn't stop sharing the microphone.") }
       case .add(let device):
-        if !(await perform(ControlRequest(action: "add", device: device))) { failure = error ?? "Couldn't add the microphone." }
+        if !(await perform(ControlRequest(action: "add", device: device))) { failure = error ?? String(localized: "Couldn't add the microphone.") }
       }
       if let failure {
         microphoneError = failure
@@ -81,7 +81,7 @@ struct MicCard: View {
   // Passthrough choices: "bus:<id>" for known devices, "new:<location>" for others.
   var deviceOptions: [(tag: String, name: String)] {
     model.usbMicrophones.map { ("bus:" + $0.id, $0.name) }
-      + model.newUSBMicrophones.map { ("new:" + $0.location, $0.name.isEmpty ? "USB microphone" : $0.name) }
+      + model.newUSBMicrophones.map { ("new:" + $0.location, $0.name.isEmpty ? String(localized: "USB microphone") : $0.name) }
   }
   var selectedDeviceTag: String? {
     if let handedOver { return "bus:" + handedOver.id }
@@ -169,7 +169,7 @@ struct MicCard: View {
       }
 
       if let error = mic.error {
-        Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+        Label(serviceText(error), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
           .textSelection(.enabled)
       }
     }.padding(16).background(
@@ -179,7 +179,7 @@ struct MicCard: View {
     .disabled(!model.online || working || mic.busy)
   }
 
-  func option(selected: Bool, title: String, detail: String?, action: @escaping () -> Void) -> some View {
+  func option(selected: Bool, title: LocalizedStringKey, detail: LocalizedStringKey?, action: @escaping () -> Void) -> some View {
     Button(action: action) {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Image(systemName: selected ? "largecircle.fill.circle" : "circle")
@@ -225,11 +225,11 @@ struct MicCard: View {
     }
   }
   var macState: String {
-    guard model.online else { return "Waiting for sharing service" }
+    guard model.online else { return String(localized: "Waiting for sharing service") }
     switch micStatus?.state {
-    case "Waiting for Windows": return "Not attached by a PC yet"
-    case let state?: return state
-    case nil: return "Waiting for sharing service"
+    case "Waiting for Windows": return String(localized: "Not attached by a PC yet")
+    case let state?: return serviceText(state)
+    case nil: return String(localized: "Waiting for sharing service")
     }
   }
 
@@ -237,12 +237,12 @@ struct MicCard: View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 5) {
         Circle().fill(device.state == "Connected to Windows" ? .green : .secondary).frame(width: 6, height: 6)
-        Text(device.state == "Waiting for Windows" ? "Not attached by a PC yet" : device.state)
+        Text(device.state == "Waiting for Windows" ? String(localized: "Not attached by a PC yet") : serviceText(device.state))
           .font(.caption).foregroundStyle(.secondary)
       }
       if device.state != "Connected to Windows", let error = device.lastError,
         error.hasPrefix("In use by") || error.hasPrefix("Another app") {
-        Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+        Label(serviceText(error), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
       }
     }
   }
@@ -254,10 +254,10 @@ struct MicMenuItem: View {
   var body: some View {
     let mode = model.microphoneMode
     Menu("Microphone on Windows") {
-      Button((mode == .off ? "✓ " : "") + "Off") { Task { await model.chooseMicrophone(.off) } }
-      Button((mode == .mac ? "✓ " : "") + "Share the Mac's microphone") { Task { await model.chooseMicrophone(.mac) } }
+      Button((mode == .off ? "✓ " : "") + String(localized: "Off")) { Task { await model.chooseMicrophone(.off) } }
+      Button((mode == .mac ? "✓ " : "") + String(localized: "Share the Mac's microphone")) { Task { await model.chooseMicrophone(.mac) } }
       ForEach(model.usbMicrophones) { device in
-        Button((mode == .handOver(device.id) ? "✓ " : "") + "Hand over \(device.name)") {
+        Button((mode == .handOver(device.id) ? "✓ " : "") + String(localized: "Hand over \(device.name)")) {
           Task { await model.chooseMicrophone(.handOver(device.id)) }
         }
       }

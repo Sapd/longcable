@@ -16,6 +16,9 @@ jobs:
       - name: Unit tests
         run: swift test --disable-sandbox
 
+      - name: Translations complete
+        run: scripts/check-localization.sh
+
       - name: Installer tests
         run: |
           swift build -c release --disable-sandbox
