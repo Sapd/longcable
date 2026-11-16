@@ -1,10 +1,19 @@
-# Longcable
+# Longcable: USB/IP server for macOS
 
-**A very long USB cable for your Mac.** Longcable is a native macOS
-[USB/IP](https://docs.kernel.org/usb/usbip_protocol.html) server: plug a USB device into
-your Mac and use it on a Windows (or Linux) PC over the network, as if it were plugged
-in there. In other words: USB passthrough (USB over IP, USB redirection) from a Mac to
-a PC, for joysticks, HOTAS setups, eye trackers, controllers and USB microphones.
+**A very long USB cable for your Mac.** Longcable is a free, open-source, native macOS
+[USB/IP](https://docs.kernel.org/usb/usbip_protocol.html) server (USB over IP): plug a
+USB device into your Mac and use it on a Windows (or Linux) PC over the network, as if
+it were plugged in there. In other words: USB passthrough (USB redirection) from a Mac
+to a PC, for joysticks, HOTAS setups, eye trackers, controllers and USB microphones.
+
+**It also forwards your Mac's microphone to a Windows PC** (experimental). Any Mac input (the built-in
+MacBook microphone, a USB mic, AirPods) shows up on Windows as a microphone called
+"Longcable Mic", while the Mac keeps using it. See
+[Forward your Mac's microphone to Windows](#forward-your-macs-microphone-to-windows-longcable-mic).
+
+It is made for people who stream games from a Windows gaming PC to a Mac with Moonlight,
+Sunshine, Apollo or Artemis and need their USB devices, and their voice, on the gaming
+PC: with the forwarded Mac microphone you can talk in Discord or in a game.
 
 USB/IP is built into Linux for sharing and using devices. Windows has
 [usbipd-win](https://github.com/dorssel/usbipd-win) for sharing and
@@ -19,6 +28,24 @@ to install there.
 <p align="center">
   <img src="Artwork/screenshot.png" width="600" alt="Longcable window: both VKB sticks and the eye tracker connected to the Windows PC">
 </p>
+
+## Features
+
+- **USB over IP from a Mac:** share USB devices with a Windows or Linux PC over the
+  standard USB/IP protocol (TCP port 3240).
+- **Nothing extra on Windows:** the official, signed usbip-win2 client is all you need.
+  It remembers your devices across reboots and dropped connections.
+- **Stable bus IDs:** a device keeps its bus ID across reconnects and Mac port changes.
+- **Menu-bar app:** tick the devices to share; **Connect a PC** gives you the Windows
+  command to copy.
+- **Tailscale or LAN:** only PCs on the peer list may connect.
+- **Forward your Mac's microphone to Windows (Longcable Mic, experimental):** one switch
+  in the app turns any Mac input into a virtual USB microphone on the Windows PC, while
+  the Mac keeps using it. See
+  [Forward your Mac's microphone to Windows](#forward-your-macs-microphone-to-windows-longcable-mic).
+- **USB microphone passthrough (experimental):** under **Microphone on Windows**, hand a
+  USB microphone over to Windows as a whole device, with its own drivers.
+- **Free and open source** (GPL-3.0).
 
 ## Why I built it: HOTAS and eye tracking over game streaming
 
@@ -38,9 +65,20 @@ My setup, all running through Longcable:
 | Steam Controller puck | `28de:1304` | controller receiver |
 | Elgato Wave:3 | `0fd9:0070` | microphone (experimental isochronous support) |
 
-## What has been tested
+## Tested hardware and results
 
-On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8.1:
+Tested on an Apple Silicon Mac (macOS 27) with Windows 11 and usbip-win2 0.9.8.1:
+
+- Two VKB sticks and a Tobii eye tracker at once: hours of Star Citizen, and zero failed
+  reads in a 20-second input check.
+- Survives unplugging, USB port changes, service restarts, network drops and Windows
+  reboots: devices come back by themselves.
+- Longcable Mic: a test tone arrives exactly, the Mac keeps using the microphone, and
+  Discord hears it.
+- The Windows setup command, tested end to end on a real PC.
+
+<details>
+<summary>All test results</summary>
 
 | Test | Result |
 |---|---|
@@ -55,12 +93,20 @@ On an Apple Silicon Mac (macOS 27) with a Windows 11 PC running usbip-win2 0.9.8
 | Both usbip-win2 receive modes | work; low-latency is the one I use |
 | A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
 | Elgato Wave:3 microphone (experimental) | records on Windows and in Discord, no dropouts; 5× start/stop clean; after unplug/replug it needs **Reconnect** |
+| Longcable Mic (virtual microphone, experimental) | Windows loads its own USB audio driver, no errors in Device Manager; a 440 Hz test tone arrives at exactly 440 Hz with no gaps; the MacBook microphone records on Windows while the Mac records it at the same time; Discord's mic test plays the voice back |
 
 Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
-99 unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
-filter, peer allowlists) and 16 installer checks in a sandbox without sudo.
+Unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+filter, peer allowlists, the virtual microphone) and installer checks in a sandbox without sudo.
 
-## How it works
+The Windows setup command has its own end-to-end test against a real PC
+([`scripts/test-setup-e2e.sh`](scripts/test-setup-e2e.sh)): first setup, re-runs,
+unplugged devices, the same Mac under another name, an unreachable Mac, an older Longcable
+service, a cut-off reply and removal, with other servers' devices left untouched.
+
+</details>
+
+## How it works: USB/IP from a Mac to Windows
 
 ```
 USB device ──▶ Mac (Longcable) ══ USB/IP over TCP 3240 ══▶ Windows (usbip-win2) ──▶ game
@@ -70,7 +116,16 @@ Longcable takes the whole device away from macOS while it is shared and gives it
 when you stop sharing. Bus IDs (`1-1`, `1-2`, …) stay stable across reconnects and Mac
 port changes, so the Windows side can remember them.
 
-## Setup
+[Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic) is different: it is a virtual USB microphone that Longcable creates
+itself (bus ID `2-1`). The Mac keeps the real microphone.
+
+```
+Mac microphone ──▶ Longcable (records) ══ USB/IP over TCP 3240 ══▶ Windows: "Longcable Mic" ──▶ Discord / game
+      │
+      └──▶ Mac apps keep using it at the same time
+```
+
+## Setup: install on the Mac, connect a Windows PC
 
 ### Quick start
 
@@ -84,21 +139,45 @@ The installer verifies the release checksum, installs the background service and
 opens Longcable. It allows your tailnet if Tailscale is running, otherwise your
 primary LAN subnet. It prints the choice and how to override it.
 
-1. Tick the devices you want to share in the app.
-2. Click **Connect a PC**, choose Tailscale or LAN, and copy the Windows command.
-3. Paste it into an **administrator PowerShell** on the PC. It installs usbip-win2
-   with winget if needed, attaches shared devices and remembers them.
-4. If a connection is refused, click **Allow** on the Mac, then retry the command.
+1. Tick the devices you want to share in the app (and, under **Microphone on Windows**,
+   choose **Share the Mac's microphone** if you want it).
+2. Click **Connect a PC**, then **Copy command**.
+3. Paste it into **PowerShell or Windows Terminal opened as administrator** on the PC and
+   press Enter. It installs usbip-win2 with winget if needed, attaches the shared devices
+   and remembers them.
+4. If a connection is refused, click **Allow** on the Mac, then run the command again.
+
+Changed what's shared later? Run **the same command** again: the script asks the Mac what
+it shares, so the PC then matches the Mac (new devices are attached, removed ones are
+detached, unplugged ones are kept for later).
 
 ### Windows
 
 **No extra client needed.** usbip-win2 is reliable, signed and already remembers your devices across reboots and dropped connections - there's no wrapper app, no background service and nothing else running on your gaming PC.
 
-Prefer a GUI? Open usbip-win2's own **USBip** app (`wusbip.exe`, in
-`C:\Program Files\USBip`). Enter the Mac address under **Server** → **Add devices** →
-select the devices → **Attach**. Tick **Auto** → **Save** to remember them.
+**It's one command.** Click **Connect a PC** on the Mac, **Copy command**, and paste it into
+PowerShell or Windows Terminal opened as administrator. Run the same command again
+whenever you change what's shared: the PC then matches the Mac.
+
+The command runs [`setup-windows.ps1`](scripts/setup-windows.ps1) (read it first if you
+like): it asks the Mac which devices it shares, then attaches them with usbip-win2,
+detaches the ones you stopped sharing and saves the list so Windows reconnects them after
+restarts, without touching devices from other servers.
+
+<p align="center">
+  <img src="Artwork/connect-a-pc.png" width="600" alt="Three steps: click Connect a PC in the Longcable window, click Copy command, paste it into an administrator PowerShell on Windows and press Enter">
+</p>
+
+<details>
+<summary>Prefer a GUI? usbip-win2's own USBip app</summary>
+
+Open usbip-win2's **USBip** app (`wusbip.exe`, in `C:\Program Files\USBip`). Enter the
+Mac address under **Server** → **Add devices** → select the devices → **Attach**. Tick
+**Auto** → **Save** to remember them.
 
 <img src="Artwork/windows-usbip-app.png" width="600" alt="usbip-win2 USBip app: server address, device attachment and Auto setting">
+
+</details>
 
 <details>
 <summary>Manual setup</summary>
@@ -170,6 +249,59 @@ Set-ItemProperty $p ReattachFirstDelay 5 -Type DWord
 
 </details>
 
+## Forward your Mac's microphone to Windows (Longcable Mic)
+
+Sharing a USB microphone hands the whole device to Windows, so the Mac can't use it
+meanwhile. **Longcable Mic** is the other way round: Longcable.app records a Mac input
+through Core Audio (any input: a USB mic, the built-in MacBook microphone, AirPods) and
+the Longcable service offers Windows a separate virtual USB microphone called
+"Longcable Mic" over the same USB/IP connection. The Mac keeps the real microphone, and
+Mac apps can use it at the same time.
+
+Use it when your streaming setup doesn't carry your microphone and you want to talk on
+the gaming PC: in Discord or in in-game voice chat such as Star Citizen's. It is
+**experimental**.
+
+```
+Mac microphone ──▶ Longcable.app ──▶ longcable-server ══ USB/IP ══▶ Windows: "Longcable Mic"
+                   (records only while Windows listens)
+```
+
+### Turn on Longcable Mic
+
+<p align="center">
+  <img src="Artwork/microphone-card.png" width="600" alt="Microphone on Windows card in the Longcable app: Off, Share the Mac's microphone (recommended, selected, Windows is listening, input Wave Link MicrophoneFX) or Hand over a USB microphone (Elgato Wave:3)">
+</p>
+
+It takes one switch in the app (it starts switched off, so nothing records until you
+want it):
+
+1. In the Longcable window, under **Microphone on Windows**, choose **Share the Mac's
+   microphone** and pick an input (or keep
+   *System default*). The same choice is in the menu bar under **Microphone on Windows**.
+   macOS asks once for microphone access.
+2. Click **Connect a PC** → **Copy command** and run it on the PC, like for any other
+   device (the microphone is bus `2-1`).
+3. On Windows, pick **Longcable Mic** as the microphone in Discord, the game or
+   *Sound settings*.
+
+### Good to know
+
+- The Mac records only while a Windows app actually has the microphone open; the orange
+  recording dot on the Mac means Windows is listening.
+- Longcable.app must be running (it lives in the menu bar). If it is closed, Windows gets
+  silence instead of an error, and the sound comes back when the app starts again.
+- Mono, 48 kHz, 16-bit, about 40–60 ms of delay (an estimate): made for voice chat.
+- Nothing extra is needed on Windows: usbip-win2 and the built-in USB audio driver.
+  Windows sees a USB Audio Class 1 microphone.
+- Tested on Windows 11 with usbip-win2 0.9.8.1; see
+  [Tested hardware and results](#tested-hardware-and-results).
+- USB microphones appear in the **Microphone on Windows** card instead of the device list:
+  devices with a USB audio interface and no camera. Webcams with a built-in microphone stay
+  in the device list; a USB speaker would show up as a microphone too.
+- The app is signed ad hoc, so macOS may ask for microphone access again after an update.
+- The USB ID is `1209:0001`, the pid.codes test ID, until a dedicated ID is assigned.
+
 ## Network: Tailscale or LAN
 
 USB/IP has **no authentication and no encryption**. Anyone who can reach port 3240 and
@@ -212,6 +344,12 @@ Install Longcable on the Mac, tick the device in the app, click **Windows comman
 the device and paste the command into an administrator PowerShell on the PC. Windows
 remembers it and reconnects it after reboots. See [Quick start](#quick-start).
 
+### Is there a free USB/IP server for macOS?
+
+Yes, that is what Longcable is. It uses Apple's IOUSBHost device capture, so it needs no
+kernel extension, no DriverKit entitlement and no SIP changes. It requires macOS 13 or
+later (Apple Silicon or Intel).
+
 ### Is there a free VirtualHere alternative for macOS?
 
 Longcable is free and open source (GPL-3.0) and uses the standard USB/IP protocol, so
@@ -223,10 +361,47 @@ Linux. See [Alternatives](#alternatives) for the differences.
 Yes, through [Tailscale](https://tailscale.com) or another VPN such as WireGuard. Don't
 forward the USB/IP port on your router: USB/IP has no authentication or encryption.
 
+### How do I forward my microphone from my Mac to a Windows PC?
+
+In the Longcable app, under **Microphone on Windows**, choose **Share the Mac's
+microphone**, run the Windows command once and pick
+**Longcable Mic** as the input on Windows. It works with any Mac input: a USB mic, the
+built-in MacBook microphone or AirPods. The Mac keeps the microphone, so Mac apps can
+use it at the same time. See [Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic); it is experimental.
+
+### Can I use my Mac mic in Discord on my gaming PC?
+
+Yes. With Longcable Mic on, Windows has a microphone called "Longcable Mic". Select it
+as the input device in Discord. In my test on Windows 11, Discord's mic test played the
+voice back. The sound is mono, 48 kHz, with about 40–60 ms of delay (an estimate).
+
+### Can I still use the microphone on the Mac at the same time?
+
+Yes. Longcable Mic doesn't take the microphone away from the Mac: it records it like any
+other Mac app, through macOS's shared audio system. FaceTime, Zoom, Discord on the Mac and
+other apps keep working with the same microphone while Windows hears it too. (Sharing a USB
+microphone with USB passthrough is different: then Windows gets the whole device and the Mac
+can't use it until you stop sharing.)
+
+### Moonlight microphone: how do I talk in game while streaming?
+
+When your streaming setup doesn't carry your microphone, use
+[Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic): the gaming PC gets a virtual USB microphone fed by the Mac you
+stream to. Pick it in the game's voice settings (for example Star Citizen) or in
+Discord. Nothing extra is needed on Windows besides usbip-win2.
+
+### Does Longcable record my microphone all the time?
+
+No. Longcable Mic stays off until you flip its switch in the app. When it is on, the Mac records only while a Windows
+app has the microphone open, and macOS shows its orange recording indicator then.
+
 ### Can I share a USB microphone?
 
-Experimentally. An Elgato Wave:3 works on Windows, including in Discord; see
-[Limitations](#limitations) for the known issue after unplugging it.
+Yes, in two ways, both under **Microphone on Windows** in the app. **Share the Mac's
+microphone** gives Windows [Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic)
+while the Mac keeps using the microphone. **Hand over a USB microphone** gives Windows the
+whole device with its own drivers: an Elgato Wave:3 works on Windows, including in Discord
+(experimental); see [Limitations](#limitations) for the known issue after unplugging it.
 
 ## Alternatives
 
@@ -245,17 +420,22 @@ for the same job:
 | Client on Linux | built-in `usbip` | VirtualHere client |
 | Mac server (share devices *from* a Mac) | native, IOUSBHost, no kernel extension | yes |
 | Mac client (use remote devices *on* a Mac) | **not supported** | yes |
-| USB audio and webcams | audio experimental, webcams untested | supported |
+| Mac microphone on Windows, Mac keeps using it | **yes**: [Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic), a virtual USB microphone fed from any Mac input (built-in, USB, AirPods); experimental | no: a USB microphone can only be passed through whole, so the Mac loses it; built-in and Bluetooth microphones can't be shared |
+| USB audio passthrough and webcams | audio experimental, webcams untested | supported |
 
 VirtualHere is more mature, especially for audio and video devices. Longcable is a good
 fit if you want free, open source and standard USB/IP, for example for HOTAS sticks,
-eye trackers and controllers.
+eye trackers and controllers, or if you want your Mac's microphone on the PC without
+handing it over.
 
 ### Others
 - **[usbipd-win](https://github.com/dorssel/usbipd-win):** the same idea in the other
   direction, sharing devices *from* a Windows PC.
 
 ## Reference
+
+<details>
+<summary>Paths, local controls, fixed devices, development and releases</summary>
 
 - Settings: `/Library/Application Support/Longcable/`. Logs: `/Library/Logs/Longcable/`.
   Service: launchd `org.sapd.longcable`.
@@ -276,6 +456,8 @@ eye trackers and controllers.
   `longcable-macos.tar.gz` (with a SHA-256 file) to a GitHub release. The binaries are
   not notarized; downloading with `curl` as shown above avoids the Gatekeeper prompt.
 
+</details>
+
 ## Limitations
 
 - **Mac as client is not supported.** Longcable only shares devices *from* a Mac. Using
@@ -291,6 +473,8 @@ eye trackers and controllers.
   - USB/IP over TCP is sensitive to jitter: audio is realistic on a LAN or a direct
     Tailscale connection; webcams also need substantial bandwidth.
   - Full- and high-speed USB only; USB 3 isochronous devices are rejected.
+- **Longcable Mic is EXPERIMENTAL.** Mono only, and Longcable.app must be running; see
+  [Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic) for the details.
 - **Apps holding a device:** if another app (for example Wave Link for Elgato mics) has
   the device open, the Longcable app names it ("In use by …") and sharing waits until
   you close that app. Windows then attaches it by itself if the device is stashed.
