@@ -34,6 +34,7 @@ do {
     var alsoShared = [String]()
     var noSharedList = false
     var brokenSharedList = false
+    var sharedListID: String?
     while let option = rest.first {
       rest.removeFirst()
       if option == "--no-shared-list" { noSharedList = true; continue }
@@ -49,11 +50,13 @@ do {
         frequency = hz
       case "--capture": capture = value
       case "--also-shared": alsoShared = value.split(separator: ",").map(String.init)
+      case "--shared-list-id": sharedListID = value
       default: throw USBError.message("Unknown option \(option)")
       }
     }
     let server = USBServer.virtualMicDevelopment(config: config)
-    server.developmentOptions(alsoShared: alsoShared, noSharedList: noSharedList, brokenSharedList: brokenSharedList)
+    server.developmentOptions(alsoShared: alsoShared, noSharedList: noSharedList, brokenSharedList: brokenSharedList,
+      sharedListID: sharedListID)
     if let capture {
       // Records like the app does: only while Windows is listening.
       let mic = MicCapture(deviceUID: capture == "default" ? nil : capture)

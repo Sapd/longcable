@@ -58,6 +58,15 @@ final class SharedListTests: XCTestCase {
     XCTAssertTrue(reply.contains("Content-Length: \(body.utf8.count)\r\n"))
   }
 
+  // AutoSync on Windows only acts when the same Mac answers at the address.
+  func testReplyNamesThisMac() throws {
+    let s = try server()
+    let reply = try ask(s, request)
+    XCTAssertTrue(reply.contains("\r\nX-Longcable-Id: \(VirtualMic.macSerial())\r\n"), reply)
+    s.developmentOptions(alsoShared: [], noSharedList: false, sharedListID: "other-mac")
+    XCTAssertTrue(try ask(s, request).contains("\r\nX-Longcable-Id: other-mac\r\n"))
+  }
+
   func testNothingSharedIsAnExplicitEmptyList() throws {
     let s = try server()
     for bus in ["1-1", "1-2"] {

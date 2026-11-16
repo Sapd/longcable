@@ -33,7 +33,10 @@ param(
     # Remove that task again; devices stay as they are.
     [switch]$RemoveAutoSync,
     # Used by the task: no screen output, notable runs go to the log file.
-    [switch]$Quiet
+    [switch]$Quiet,
+    # Used by the task: the identity the Mac reported when AutoSync was set up. A
+    # different answer at the same address (another network, another device) is ignored.
+    [string]$MacId
 )
 # This script's own text, to install it for AutoSync (also when run from memory).
 $selfText = $MyInvocation.MyCommand.ScriptBlock.ToString()
@@ -43,22 +46,68 @@ function Say([string]$text, [string]$color = '') {
     if ($Quiet) { $logLines.Add($text); return }
     if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text }
 }
-$logFile = Join-Path $env:ProgramData 'Longcable\sync.log'
-# Quiet runs keep a short log of runs that changed something or failed.
+# Everything this script keeps on the PC lives in one folder that only administrators
+# and the system can change: the copy the task runs, the log, and the retry list. The
+# task runs as SYSTEM, so none of it may be writable by ordinary users.
+$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$stateDir = Join-Path $programFiles 'Longcable'
+$installedScript = Join-Path $stateDir 'setup-windows.ps1'
+$logFile = Join-Path $stateDir 'sync.log'
+$lastRunFile = Join-Path $stateDir 'last-run.txt'
+$waitingFile = Join-Path $stateDir 'waiting.txt'
+$powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$taskFolder = '\Longcable\'
+function Get-LongcableTasks { @(Get-ScheduledTask -TaskPath $taskFolder -ErrorAction SilentlyContinue) }
+# Writable only by SYSTEM, Administrators or TrustedInstaller, owned by one of them,
+# and not a link. Repairs the permissions if needed; fails if it can't.
+function Assert-SafeFolder {
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # Rights that change something: write data, append, extended attributes, delete children,
+    # attributes, delete, change permissions, take ownership, generic all and generic write.
+    $writeRights = 0x500D0156
+    function Test-Safe {
+        $item = Get-Item -LiteralPath $stateDir -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+        $acl = Get-Acl -LiteralPath $stateDir
+        $owner = (New-Object Security.Principal.NTAccount($acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($trusted -notcontains $owner) { return $false }
+        foreach ($rule in $acl.Access) {
+            if ($rule.AccessControlType -ne 'Allow' -or -not ([int]$rule.FileSystemRights -band $writeRights)) { continue }
+            try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { return $false }
+            if ($trusted -notcontains $sid) { return $false }
+        }
+        return $true
+    }
+    if (-not (Test-Path -LiteralPath $stateDir)) { New-Item -ItemType Directory -Path $stateDir | Out-Null }
+    if (Test-Safe) { return }
+    $item = Get-Item -LiteralPath $stateDir -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$stateDir is a link, not a folder. Delete it, then run the command again." }
+    # The folder gets fixed permissions; what is inside goes back to inheriting them.
+    & icacls.exe $stateDir /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+    & icacls.exe $stateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /C /Q | Out-Null
+    if (Get-ChildItem -LiteralPath $stateDir -Force) { & icacls.exe (Join-Path $stateDir '*') /reset /T /C /Q | Out-Null }
+    if (-not (Test-Safe)) { Fail "Could not make $stateDir writable only by administrators. Nothing was changed." }
+}
+# Writes a file in the safe folder via a temporary file, so a reader never sees half of it.
+function Write-StateFile([string]$path, [string[]]$lines) {
+    $temp = "$path.new"
+    Set-Content -LiteralPath $temp -Value $lines -Encoding ASCII
+    Move-Item -LiteralPath $temp -Destination $path -Force
+}
+# Quiet runs log what changed or failed; the same problem every minute is logged once.
 function Write-Log {
-    if (-not $Quiet -or $logLines.Count -eq 0) { return }
+    if (-not $Quiet) { return }
     try {
-        New-Item -ItemType Directory -Force -Path (Split-Path $logFile) | Out-Null
+        $summary = ($logLines -join ' | ')
+        $last = if (Test-Path -LiteralPath $lastRunFile) { (Get-Content -LiteralPath $lastRunFile -Raw).Trim() } else { '' }
+        if ($summary -eq $last) { return }
+        Write-StateFile $lastRunFile @($summary)
+        if ($logLines.Count -eq 0) { return }
         $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-        $old = @(if (Test-Path $logFile) { Get-Content $logFile -Tail 400 })
-        Set-Content -Path $logFile -Encoding ASCII -Value ($old + @($logLines | ForEach-Object { "$stamp  $_" }))
+        $old = @(if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile -Tail 400 })
+        Write-StateFile $logFile ($old + @($logLines | ForEach-Object { "$stamp  $_" }))
     } catch { }
 }
-$taskFolder = '\Longcable\'
-$taskName = 'Sync ' + ($Server -replace '[^A-Za-z0-9.\-]', '-') + " $Port"
-$installDir = Join-Path $env:ProgramFiles 'Longcable'
-$installedScript = Join-Path $installDir 'setup-windows.ps1'
-function Get-LongcableTasks { @(Get-ScheduledTask -TaskPath $taskFolder -ErrorAction SilentlyContinue) }
 # Stops the script without 'exit': run from memory in an interactive console,
 # 'exit' would close the window before the message can be read.
 function Fail([string]$text) {
@@ -71,27 +120,31 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Fail 'Please open PowerShell or Windows Terminal "as administrator" (right-click it), then paste the command again.'
 }
-if ($Server -notmatch '^[A-Za-z0-9.\-:\[\]%_]+$') { Fail "That doesn't look like a Mac address: $Server" }
+$addressPattern = '^[A-Za-z0-9.\-:\[\]%_]+$'
+if ($Server -notmatch $addressPattern) { Fail "That doesn't look like a Mac address: $Server" }
 $Server = $Server.Trim('[', ']')
-$taskName = 'Sync ' + ($Server -replace '[^A-Za-z0-9.\-]', '-') + " $Port"
-if ($RemoveAutoSync) {
-    if (Get-LongcableTasks | Where-Object { $_.TaskName -eq $taskName }) {
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false
-        Say "Stopped keeping this PC in step with $Server automatically. Devices stay as they are."
-    } else {
-        Say "This PC wasn't kept in step with $Server automatically."
-    }
-    if ((Get-LongcableTasks).Count -eq 0 -and (Test-Path $installedScript)) { Remove-Item $installedScript -Force }
-    $global:LASTEXITCODE = 0
-    return
+if ($MacId -and $MacId -notmatch '^[A-Za-z0-9-]{1,64}$') { Fail 'Invalid -MacId.' }
+if ($AutoSync -and ($Sync -or $PSBoundParameters.ContainsKey('BusIds'))) {
+    Fail '-AutoSync follows what the Mac shares, so it cannot be combined with -Sync or -BusIds.'
 }
+# One run at a time (a manual run and the task, or tasks for two Macs).
+$mutex = New-Object System.Threading.Mutex($false, 'Global\LongcableSync')
+$haveMutex = $false
+try { $haveMutex = $mutex.WaitOne($(if ($Quiet) { 0 } else { 60000 })) } catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
+if (-not $haveMutex) {
+    if ($Quiet) { $logLines.Clear(); throw 'longcable-busy' }
+    Fail 'Another Longcable setup is running on this PC. Try again in a minute.'
+}
+Assert-SafeFolder
 $BusIds = @($BusIds | Where-Object { $_ } | ForEach-Object { "$_".Trim() } | Select-Object -Unique)
 foreach ($bus in $BusIds) {
     if ($bus -notmatch '^\d+-[\d.]+$') { Fail "Invalid bus ID: $bus" }
 }
 
-$usbip = 'C:\Program Files\USBip\usbip.exe'
+$usbip = Join-Path $programFiles 'USBip\usbip.exe'
 if (-not (Test-Path $usbip)) {
+    # The task never installs software; only a run started by a person does.
+    if ($Quiet) { Fail "usbip-win2 is not installed ($usbip). Nothing was changed." }
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Fail 'Please install usbip-win2 from https://github.com/vadimgrn/usbip-win2/releases, then run the command again.'
     }
@@ -129,6 +182,35 @@ function Test-ThisMac([string]$name, [int]$servicePort) {
         $sameHostCache[$name] = [bool](Resolve-Addresses $name | Where-Object { $serverAddresses -contains $_ })
     }
     return $sameHostCache[$name]
+}
+
+# The task's own -Server/-Port, read back from its arguments.
+function Get-TaskTarget($task) {
+    $arguments = "$($task.Actions[0].Arguments)"
+    $server = if ($arguments -match '-Server\s+(\S+)') { $Matches[1] } else { '' }
+    $port = if ($arguments -match '-Port\s+(\d+)') { [int]$Matches[1] } else { 3240 }
+    return [pscustomobject]@{ Server = $server; Port = $port }
+}
+if ($RemoveAutoSync) {
+    # Found by what the task points at, so the Mac's other name or address works too.
+    $mine = @(Get-LongcableTasks | Where-Object { $t = Get-TaskTarget $_; $t.Server -and (Test-ThisMac $t.Server $t.Port) })
+    foreach ($task in $mine) {
+        Stop-ScheduledTask -TaskPath $taskFolder -TaskName $task.TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $task.TaskName -Confirm:$false
+    }
+    if ($mine.Count -gt 0) { Say "Stopped keeping this PC in step with $Server automatically. Devices stay as they are." }
+    else { Say "This PC wasn't kept in step with $Server automatically." }
+    $others = @(Get-LongcableTasks)
+    if ($others.Count -gt 0) {
+        Say ('Still syncing automatically with: ' + (($others | ForEach-Object { (Get-TaskTarget $_).Server }) -join ', ') +
+            '. Run this command with that address to stop it too.')
+    } else {
+        foreach ($file in @($installedScript, $logFile, $lastRunFile)) {
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+        }
+    }
+    $global:LASTEXITCODE = 0
+    return
 }
 
 # Attached devices: "Port NN: ..." followed by "-> usbip://HOST:PORT/BUSID".
@@ -214,6 +296,9 @@ if (-not $PSBoundParameters.ContainsKey('BusIds')) {
         Fail "Couldn't get the list of shared devices from the Mac ($($answer.Why)). Nothing was changed. Check the connection, then run the command again."
     }
     if ($answer.Kind -eq 'legacy') {
+        if ($MacId -or $AutoSync) {
+            Fail 'The Longcable service on the Mac is older and cannot be synced automatically. Update Longcable on the Mac, then run the command again. Nothing was changed.'
+        }
         # Without the full list it can't tell unplugged from removed: attach only,
         # and keep everything else as it is.
         $legacy = $true
@@ -221,7 +306,11 @@ if (-not $PSBoundParameters.ContainsKey('BusIds')) {
         $BusIds = $offered
     } else {
         $reply = $answer.Text
-        $body = ($reply -split "`r`n`r`n", 2)[-1]
+        $head, $body = $reply -split "`r`n`r`n", 2
+        $replyId = if ($head -match '(?m)^X-Longcable-Id:\s*([A-Za-z0-9-]{1,64})\s*$') { $Matches[1] } else { '' }
+        if ($MacId -and $replyId -ne $MacId) {
+            Fail "Something other than the Mac this PC was set up with answered at $Server (reported '$replyId'). Nothing was changed."
+        }
         $lines = @($body -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         $valid = $reply.StartsWith('HTTP/1.0 200') -and $lines.Count -ge 2 -and $lines[0] -eq 'longcable 1' -and $lines[-1] -eq 'end'
         # Between the header and "end"; 1..0 would count down in PowerShell.
@@ -237,12 +326,21 @@ if (-not $PSBoundParameters.ContainsKey('BusIds')) {
 # 2. Attach what is shared. A shared device the Mac doesn't offer right now is
 #    unplugged: usbip-win2 keeps trying it, so it connects once it's plugged in.
 # Retries this script already started (see waiting.txt below): don't start another.
-$waitingFile = Join-Path $env:ProgramData 'Longcable\waiting.txt'
-$retrying = @(if (Test-Path $waitingFile) {
-    Get-Content $waitingFile | ForEach-Object {
-        if ($_ -match '^(.+),(\d+),(\d+-[\d.]+)$' -and (Test-ThisMac $Matches[1] ([int]$Matches[2]))) { $Matches[3] }
-    }
-})
+# Retries end with a restart of Windows, so the list only counts for the current boot.
+$bootId = 'boot ' + (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyyMMddHHmmss')
+function Read-Waiting {
+    @(if (Test-Path -LiteralPath $waitingFile) {
+        $lines = @(Get-Content -LiteralPath $waitingFile)
+        if ($lines.Count -gt 0 -and $lines[0] -eq $bootId) { $lines | Select-Object -Skip 1 | ForEach-Object {
+            if ($_ -match '^([^,]+),(\d{1,5}),(\d+-[\d.]+)$') {
+                $entry = [pscustomobject]@{ Line = $_; Host = $Matches[1]; Port = [int]$Matches[2]; Bus = $Matches[3] }
+                if ($entry.Host -match $addressPattern -and $entry.Host -notmatch '^-') { $entry }
+            }
+        } }
+    })
+}
+$waitingEntries = Read-Waiting
+$retrying = @($waitingEntries | Where-Object { Test-ThisMac $_.Host $_.Port } | ForEach-Object { $_.Bus })
 $attached = @(); $already = @(); $waiting = @(); $failed = @(); $removed = @()
 foreach ($bus in $BusIds) {
     if (Test-Attached $bus) { $already += $bus; continue }
@@ -255,12 +353,9 @@ foreach ($bus in $BusIds) {
 
 # Devices this script left retrying in the background, so a later run can cancel
 # them once the Mac stops sharing them (usbip-win2 can't list pending retries).
-$waitingBefore = @()
-if (Test-Path $waitingFile) { $waitingBefore = @(Get-Content $waitingFile | Where-Object { $_ -match '^(.+),(\d+),(\d+-[\d.]+)$' }) }
 $waitingKeep = @()
-foreach ($line in $waitingBefore) {
-    $null = $line -match '^(.+),(\d+),(\d+-[\d.]+)$'
-    $entry = [pscustomobject]@{ Host = $Matches[1]; Port = [int]$Matches[2]; Bus = $Matches[3] }
+foreach ($entry in $waitingEntries) {
+    $line = $entry.Line
     if (-not (Test-ThisMac $entry.Host $entry.Port)) { $waitingKeep += $line; continue }
     # Without the Mac's full list, keep tracking every retry as it is.
     if (-not $Sync) {
@@ -274,9 +369,8 @@ foreach ($line in $waitingBefore) {
 }
 $waitingKeep += @($waiting | ForEach-Object { "$Server,$Port,$_" })
 try {
-    New-Item -ItemType Directory -Force -Path (Split-Path $waitingFile) | Out-Null
-    if ($waitingKeep.Count -gt 0) { Set-Content -Path $waitingFile -Value $waitingKeep -Encoding ASCII }
-    elseif (Test-Path $waitingFile) { Remove-Item $waitingFile }
+    if ($waitingKeep.Count -gt 0) { Write-StateFile $waitingFile (@($bootId) + $waitingKeep) }
+    elseif (Test-Path -LiteralPath $waitingFile) { Remove-Item -LiteralPath $waitingFile }
 } catch { }
 
 # 3. Detach and stop retrying what this Mac no longer shares.
@@ -285,7 +379,7 @@ if ($Sync) {
         if ((Test-ThisMac $device.Host $device.Port) -and ($BusIds -notcontains $device.Bus)) {
             $result = Invoke-Usbip @('detach', '-p', "$($device.Hub)")
             if ($result.Code -eq 0) { $removed += $device.Bus }
-            else { Say "Could not detach $($device.Bus): $($result.Text)" 'Yellow' }
+            else { $failed += [pscustomobject]@{ Bus = $device.Bus; Why = "could not detach: $($result.Text)" } }
         }
     }
 }
@@ -342,32 +436,42 @@ if (-not $NoRegistry) {
     }
 }
 
-# 6. Keep the PC in step automatically (opt-in), and keep an installed copy current.
+# 6. Keep the PC in step automatically (opt-in). The task runs a copy of this script
+#    from the admin-only folder, as SYSTEM, and only acts for the Mac identity seen now.
 $autoSyncOn = $false
-if ($AutoSync -or (-not $Quiet -and (Get-LongcableTasks).Count -gt 0)) {
-    try {
-        New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-        Set-Content -Path $installedScript -Value $selfText -Encoding ASCII
-    } catch { Say "Could not save the script to ${installDir}: $($_.Exception.Message)" 'Yellow' }
-}
+$autoSyncFailed = $false
 if ($AutoSync) {
-    $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', "`"$installedScript`"", '-Server', $Server, '-Quiet')
-    if ($Port -ne 3240) { $arguments += @('-Port', "$Port") }
-    if ($NoRegistry) { $arguments += '-NoRegistry' }
     try {
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ($arguments -join ' ')
+        if (-not $replyId) { throw 'the Mac did not report its identity (update Longcable on the Mac)' }
+        if (-not $selfText -or $selfText -notmatch 'GET /longcable/v1/shared') { throw 'could not read this script to install it' }
+        Write-StateFile $installedScript @($selfText)
+        if ((Get-Content -LiteralPath $installedScript -Raw).Trim() -ne $selfText.Trim()) { throw 'the installed copy does not match' }
+        $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', "`"$installedScript`"", '-Server', $Server, '-Quiet', '-MacId', $replyId)
+        if ($Port -ne 3240) { $arguments += @('-Port', "$Port") }
+        if ($NoRegistry) { $arguments += '-NoRegistry' }
+        $action = New-ScheduledTaskAction -Execute $powershellExe -Argument ($arguments -join ' ')
         $triggers = @(
             (New-ScheduledTaskTrigger -AtStartup),
             (New-ScheduledTaskTrigger -AtLogOn),
             (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)))
         $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
-            -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+            -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable
+        # One task per Mac: replace any task already pointing at it (also under another name).
+        foreach ($task in @(Get-LongcableTasks | Where-Object { $t = Get-TaskTarget $_; $t.Server -and (Test-ThisMac $t.Server $t.Port) })) {
+            Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $task.TaskName -Confirm:$false
+        }
+        $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash(
+            [Text.Encoding]::ASCII.GetBytes("$Server|$Port"))).Replace('-', '').Substring(0, 8)
+        $taskName = 'Sync ' + ($Server -replace '[^A-Za-z0-9.\-]', '-') + " $Port $hash"
         Register-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Action $action -Trigger $triggers `
             -Principal $principal -Settings $settings -Force | Out-Null
         $autoSyncOn = $true
-    } catch { Say "Could not set up automatic syncing: $($_.Exception.Message)" 'Red' }
+    } catch {
+        $autoSyncFailed = $true
+        Say "Automatic syncing was not set up: $($_.Exception.Message)" 'Red'
+    }
 }
 
 # 7. What happened, device by device.
@@ -383,7 +487,8 @@ if ($BusIds.Count -eq 0 -and $removed.Count -eq 0) {
 if ($saved -and -not $Quiet) { Say 'Windows will reconnect these after restarts and dropped connections.' }
 if ($autoSyncOn) {
     Say 'This PC now checks the Mac every minute (and at startup and login) and follows its changes by itself.' 'Green'
-    Say 'To stop that, run the same command with -RemoveAutoSync instead of -AutoSync.'
+    Say "It only acts when this Mac answers. Log: $logFile"
+    Say 'To stop it, run the same command with -RemoveAutoSync instead of -AutoSync. Run it with -AutoSync again to update it.'
 } elseif ($Quiet) {
 } elseif ($legacy) {
     Say 'The Longcable service on the Mac is older, so this only attached devices. Update Longcable on the Mac to also remove devices you stop sharing.' 'Yellow'
@@ -393,11 +498,16 @@ if ($autoSyncOn) {
 # Quiet runs only log when something happened.
 if ($Quiet -and ($attached.Count + $removed.Count + $failed.Count) -eq 0) { $logLines.Clear() }
 Write-Log
-$global:LASTEXITCODE = [int]($failed.Count -gt 0)
+$global:LASTEXITCODE = [int]($failed.Count -gt 0 -or $autoSyncFailed)
 } catch {
-    $global:LASTEXITCODE = 1
-    if ($Quiet) { if ("$_" -ne 'longcable-stop') { $logLines.Add("Error: $_") }; Write-Log }
-    if ("$_" -ne 'longcable-stop') { throw }
+    if ("$_" -eq 'longcable-busy') { $global:LASTEXITCODE = 0 }
+    else {
+        $global:LASTEXITCODE = 1
+        if ($Quiet) { if ("$_" -ne 'longcable-stop') { $logLines.Add("Error: $_") }; Write-Log }
+        if ("$_" -ne 'longcable-stop') { throw }
+    }
+} finally {
+    if ($haveMutex) { $mutex.ReleaseMutex() }
 }
 # Run as a file (powershell -File), report success or failure as the exit code.
 # Run from memory (the pasted command) there is no file, and exit would close the window.

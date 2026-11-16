@@ -10,13 +10,28 @@
 param([string]$Step, [string]$Ip, [string]$Name, [string]$ScriptUrl)
 $ErrorActionPreference = 'Stop'
 $stateKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\usbip2_ude\State'
-$waitingFile = Join-Path $env:ProgramData 'Longcable\waiting.txt'
+$stateDir = Join-Path $env:ProgramW6432 'Longcable'
+$waitingFile = Join-Path $stateDir 'waiting.txt'
+$logFile = Join-Path $stateDir 'sync.log'
 $beforeFile = 'C:\Temp\longcable-e2e-before.txt'
 function Stashed { @((Get-ItemProperty $stateKey -Name PersistentDevices -ErrorAction SilentlyContinue).PersistentDevices) }
 function Mine { @(Stashed | Where-Object { $_ -match ',3241,' }) }
 function Others { @(Stashed | Where-Object { $_ -notmatch ',3241,' } | Sort-Object) }
 function Attached3241 { @((& 'C:\Program Files\USBip\usbip.exe' port) -match ':3241/') }
 function Waiting3241 { if (Test-Path $waitingFile) { @(Get-Content $waitingFile | Where-Object { $_ -match ',3241,' }) } else { @() } }
+# The task for this test Mac, found by its arguments (its name carries a hash).
+function MyTask { @(Get-ScheduledTask -TaskPath '\Longcable\' -ErrorAction SilentlyContinue |
+  Where-Object { $_.Actions[0].Arguments -match "-Server $([regex]::Escape($Ip)) " -and $_.Actions[0].Arguments -match '-Port 3241' }) }
+# Runs the task once and waits for it to finish (267009 = still running).
+function RunTask {
+  $task = @(MyTask)[0]
+  Start-ScheduledTask -TaskPath '\Longcable\' -TaskName $task.TaskName
+  $deadline = (Get-Date).AddSeconds(90)
+  do { Start-Sleep -Seconds 2; $info = Get-ScheduledTaskInfo -TaskPath '\Longcable\' -TaskName $task.TaskName }
+  while (($info.LastTaskResult -eq 267009 -or $info.LastRunTime -lt $script:started) -and (Get-Date) -lt $deadline)
+  return $info.LastTaskResult
+}
+$script:started = Get-Date
 $fail = 0
 function Check([string]$what, [bool]$ok) {
   if ($ok) { Write-Host "PASS $what" } else { Write-Host "FAIL $what"; $script:fail++ }
@@ -85,43 +100,69 @@ switch ($Step) {
     Check 'attach-only: waiting 1-9 still tracked' (((Waiting3241) -join ';') -eq "$Ip,3241,1-9")
   }
   'autosync' {
+    Setup $Ip 3241 '-AutoSync -Sync'
+    Check 'refuses -AutoSync with -Sync' ($lastExit -eq 1 -and @(MyTask).Count -eq 0)
+    # A folder ordinary users can write to must be repaired before anything runs from it.
+    & icacls.exe $stateDir /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
     Setup $Ip 3241 '-AutoSync'
     Check 'exit code 0' ($lastExit -eq 0)
     Check 'says it now syncs every minute' ($lastOutput -match 'checks the Mac every minute')
-    $task = Get-ScheduledTask -TaskPath '\Longcable\' -TaskName "Sync $Ip 3241" -ErrorAction SilentlyContinue
-    Check 'task registered' ($null -ne $task)
-    if ($task) {
+    $task = @(MyTask)
+    Check 'one task registered' ($task.Count -eq 1)
+    if ($task.Count -eq 1) {
+      $task = $task[0]
       $arg = $task.Actions[0].Arguments
-      Check 'task runs the local copy quietly for this Mac and port' ($arg -match 'Program Files\\Longcable\\setup-windows.ps1' -and $arg -match "-Server $Ip" -and $arg -match '-Port 3241' -and $arg -match '-Quiet')
+      Check 'task runs the local copy quietly for this Mac and port' ($arg -match 'Program Files\\Longcable\\setup-windows.ps1' -and $arg -match '-Port 3241' -and $arg -match '-Quiet')
+      Check 'task is bound to the identity this Mac reported' ($arg -match '-MacId [0-9a-f]{12}-test')
+      Check 'task starts PowerShell by its full path' ($task.Actions[0].Execute -match '^[A-Z]:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$')
       Check 'task runs as the system account' ($task.Principal.UserId -eq 'SYSTEM' -or $task.Principal.UserId -eq 'S-1-5-18')
       Check 'task repeats every minute' (@($task.Triggers | Where-Object { $_.Repetition.Interval -eq 'PT1M' }).Count -eq 1)
       Check 'task also runs at startup and login' (@($task.Triggers).Count -eq 3)
+      Check 'task waits for a network' ($task.Settings.RunOnlyIfNetworkAvailable)
     }
-    $copy = Join-Path $env:ProgramFiles 'Longcable\setup-windows.ps1'
+    $copy = Join-Path $stateDir 'setup-windows.ps1'
     Check 'local copy matches the script' ((Test-Path $copy) -and ((Get-Content -Raw $copy).Trim() -eq (Invoke-RestMethod $ScriptUrl).Trim()))
+    $writers = @((Get-Acl $stateDir).Access | Where-Object {
+      $_.AccessControlType -eq 'Allow' -and ([int]$_.FileSystemRights -band 0x500D0156) } |
+      ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value })
+    Check 'files in the folder stay readable after the repair' ((Get-Content -Raw $copy) -match 'GET /longcable/v1/shared')
+    Check 'only SYSTEM and administrators can change the folder' (@($writers | Where-Object { $_ -notin @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') }).Count -eq 0)
+    Setup $Ip 3241 '-AutoSync'
+    $again = ($lastExit -eq 0 -and @(MyTask).Count -eq 1)
+    Check 'running it again keeps one task' $again
+    if (-not $again) { Write-Host "FAIL detail: exit $lastExit, tasks $(@(MyTask).Count): $($lastOutput -replace "`n", ' / ')" }
   }
   'autosyncrun' {
     # The Mac now also shares 1-7 (unplugged). The task, not this command, must follow.
-    Start-ScheduledTask -TaskPath '\Longcable\' -TaskName "Sync $Ip 3241"
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline -and -not ((Waiting3241) -match ',1-7$')) { Start-Sleep -Seconds 2 }
+    $result = RunTask
     Check 'task followed the change on the Mac (1-7 now retried)' ((@(Waiting3241) -match ',1-7$').Count -eq 1)
-    # Wait for the run to finish (267009 = still running), then check its result.
-    do { Start-Sleep -Seconds 1; $info = Get-ScheduledTaskInfo -TaskPath '\Longcable\' -TaskName "Sync $Ip 3241" }
-    while ($info.LastTaskResult -eq 267009 -and (Get-Date) -lt $deadline.AddSeconds(30))
-    Check 'task finished without error' ($info.LastTaskResult -eq 0)
-    if ($info.LastTaskResult -ne 0) {
-      Write-Host "   | task result: $($info.LastTaskResult)"
-      $log = Join-Path $env:ProgramData 'Longcable\sync.log'
-      if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Write-Host "   | log: $_" } }
+    Check 'task finished without error' ($result -eq 0)
+    if ($result -ne 0) {
+      Write-Host "   | task result: $result"
+      if (Test-Path $logFile) { Get-Content $logFile -Tail 15 | ForEach-Object { Write-Host "   | log: $_" } }
     }
     Check 'mic still attached' ((Attached3241).Count -eq 1)
+  }
+  'autosyncwrongmac' {
+    # Something else answers at the address now (another id), sharing 1-6 and not 1-7.
+    $result = RunTask
+    Check 'task reports failure' ($result -eq 1)
+    Check 'nothing changed: 1-6 not attached, 1-7 still retried' ((@(Waiting3241) -match ',1-6$').Count -eq 0 -and (@(Waiting3241) -match ',1-7$').Count -eq 1)
+    # The test server restarted: usbip-win2 reconnects the mic by itself.
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Attached3241).Count -ne 1 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    Check 'mic reconnected by usbip-win2, not by the task' ((Attached3241).Count -eq 1)
+    $lines = @(Get-Content $logFile | Where-Object { $_ -match 'Something other than the Mac' })
+    Check 'logged once' ($lines.Count -eq 1)
+    $null = RunTask
+    $lines = @(Get-Content $logFile | Where-Object { $_ -match 'Something other than the Mac' })
+    Check 'the same problem again is not logged again' ($lines.Count -eq 1)
   }
   'autosyncremove' {
     Setup $Ip 3241 '-RemoveAutoSync'
     Check 'exit code 0' ($lastExit -eq 0)
-    Check 'task removed' ($null -eq (Get-ScheduledTask -TaskPath '\Longcable\' -TaskName "Sync $Ip 3241" -ErrorAction SilentlyContinue))
-    Check 'local copy removed' (-not (Test-Path (Join-Path $env:ProgramFiles 'Longcable\setup-windows.ps1')))
+    Check 'task removed' (@(MyTask).Count -eq 0)
+    Check 'local copy and log removed' (-not (Test-Path (Join-Path $stateDir 'setup-windows.ps1')) -and -not (Test-Path $logFile))
     Check 'devices stay as they are' ((Attached3241).Count -eq 1)
   }
   'removeall' {

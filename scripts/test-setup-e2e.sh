@@ -30,7 +30,7 @@ failed=0
 step() {
   local out rc=0
   out=$(ssh -o BatchMode=yes "$host" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Temp\\test-setup-windows.ps1 -Step $1 -Ip $ip -Name $name -ScriptUrl http://$ip:8765/setup-windows.ps1" 2>&1) || rc=$?
-  echo "$out" | grep -E '^===|PASS|FAIL|\| +(Connected|Already|Waiting|Not connected|Removed|Can.t|The Longcable service)' || true
+  echo "$out" | grep -E '^===|PASS|FAIL|\| +(Connected|Already|Waiting|Not connected|Removed|Can.t|The Longcable service|Did not update)' || true
   [ $rc -eq 0 ] || { failed=1; echo "(step $1 exited $rc)"; }
 }
 sleep 1
@@ -44,6 +44,7 @@ serve;                        step byname
                               step unreachable
                               step autosync
 serve --also-shared 1-7;      step autosyncrun
+serve --also-shared 1-6 --shared-list-id other-mac; step autosyncwrongmac
                               step autosyncremove
 serve;                        step removeall
 if [ $failed -eq 0 ]; then echo "E2E RESULT: ALL PASSED"; else echo "E2E RESULT: FAILED"; exit 1; fi

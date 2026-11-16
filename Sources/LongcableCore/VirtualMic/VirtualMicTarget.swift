@@ -27,7 +27,7 @@ final class VirtualMicTarget: SessionTarget {
     get { stateLock.withLock { streamingHandler } }
     set { stateLock.withLock { streamingHandler = newValue } }
   }
-  private let serial: String
+  let serial: String
   private let makeDevice: MicDeviceFactory
   private let stateLock = NSLock()
   private var streamingHandler: ((Bool) -> Void)?

@@ -391,16 +391,21 @@ public final class USBServer {
   var extraSharedForTesting = [String]()
   var sharedListAvailable = true
   var sharedListCutForTesting = false
-  public func developmentOptions(alsoShared: [String], noSharedList: Bool, brokenSharedList: Bool = false) {
+  var sharedListIDForTesting: String?
+  public func developmentOptions(alsoShared: [String], noSharedList: Bool, brokenSharedList: Bool = false,
+                                 sharedListID: String? = nil) {
     extraSharedForTesting = alsoShared
     sharedListAvailable = !noSharedList
     sharedListCutForTesting = brokenSharedList
+    sharedListIDForTesting = sharedListID
   }
 
   // Answers exactly GET /longcable/v1/shared, read with a size and time limit;
   // nothing else is served. Peers were already checked when the connection was
   // accepted. The body ends with "end" so a cut-off reply can't look like an
-  // empty list.
+  // empty list. X-Longcable-Id names this Mac (the same stable, non-reversible id
+  // the microphone uses as its serial), so a PC syncing automatically can tell
+  // when something else answers at the address.
   func serveSharedList(_ c: Connection) {
     var request = Data("GET ".utf8)
     let deadline = monotonicMS() + 2000
@@ -415,7 +420,8 @@ public final class USBServer {
     let lines = ["longcable 1"] + sharedBusIDs + (sharedListCutForTesting ? [] : ["end"])
     let body = found ? lines.joined(separator: "\n") + "\n" : "not found\n"
     let head = (found ? "HTTP/1.0 200 OK" : "HTTP/1.0 404 Not Found") +
-      "\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+      "\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\n" +
+      "X-Longcable-Id: \(sharedListIDForTesting ?? virtualMic.serial)\r\nConnection: close\r\n\r\n"
     _ = c.write(Data((head + body).utf8))
   }
 

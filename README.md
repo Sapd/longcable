@@ -170,10 +170,13 @@ restarts, without touching devices from other servers.
 **Rather not run it again yourself?** Tick **Keep this PC in step automatically** in
 Connect a PC before copying. The command then also adds a Windows scheduled task that
 runs the same script every minute, at startup and at login, so changes on the Mac reach
-the PC within a minute. It's opt-in, uses only Windows' own Task Scheduler (no extra app or
-service), runs a local copy in `C:\Program Files\Longcable` and logs changes to
-`C:\ProgramData\Longcable\sync.log`. To stop it, run the same command with
-`-RemoveAutoSync` instead of `-AutoSync` (Connect a PC shows it).
+the PC within a minute. It's opt-in and uses only Windows' own Task Scheduler (no extra
+app or service). The task runs as the system account from a copy of the script in
+`C:\Program Files\Longcable`, a folder only administrators can change, and logs to
+`sync.log` there (each change, and each new problem once). It only acts when the same Mac
+answers: if something else answers at that address, for example on another network, it
+changes nothing. Run the command with `-AutoSync` again to update the copy. To stop it, run
+it with `-RemoveAutoSync` instead (Connect a PC shows that command).
 
 <p align="center">
   <img src="Artwork/connect-a-pc.png" width="600" alt="Three steps: click Connect a PC in the Longcable window, click Copy command, paste it into an administrator PowerShell on Windows and press Enter">

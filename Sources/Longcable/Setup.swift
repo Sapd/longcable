@@ -45,16 +45,14 @@ struct SetupView: View {
             Toggle(isOn: $autoSync) {
               VStack(alignment: .leading, spacing: 2) {
                 Text("Keep this PC in step automatically")
-                Text("Adds a Windows task that checks this Mac every minute, at startup and at login, and follows its changes. Nothing else runs on the PC.")
+                Text("Adds a Windows task that checks this Mac every minute, at startup and at login, and follows its changes. It runs as the system account and only acts when this Mac answers.")
                   .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
               }
             }.toggleStyle(.checkbox)
-            if autoSync {
-              DisclosureGroup("To stop it later") {
-                command("Run on the PC", ConnectionSetup.windowsStopAutoSync(server: address, scriptURL: scriptURL))
-                  .padding(.top, 6)
-              }.font(.callout)
-            }
+            DisclosureGroup("Stop automatic syncing on a PC") {
+              command("Run on the PC", ConnectionSetup.windowsStopAutoSync(server: address, scriptURL: scriptURL))
+                .padding(.top, 6)
+            }.font(.callout)
             if ConnectionSetup.isLocalBuild(describe: describe) {
               Text("This is a local build of Longcable: the command uses the newest released Windows script.")
                 .font(.caption).foregroundStyle(.secondary)
