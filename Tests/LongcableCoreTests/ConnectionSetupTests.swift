@@ -21,6 +21,11 @@ final class ConnectionSetupTests: XCTestCase {
     let url = "https://github.com/Sapd/longcable/releases/download/v1.2.3/setup-windows.ps1"
     XCTAssertEqual(ConnectionSetup.windowsQuick(server: "mac", scriptURL: url),
       "& ([scriptblock]::Create((irm '\(url)'))) -Server 'mac'")
+    // Opt-in: keep the PC in step every minute.
+    XCTAssertEqual(ConnectionSetup.windowsQuick(server: "mac", scriptURL: url, autoSync: true),
+      "& ([scriptblock]::Create((irm '\(url)'))) -Server 'mac' -AutoSync")
+    XCTAssertEqual(ConnectionSetup.windowsStopAutoSync(server: "mac", scriptURL: url),
+      "& ([scriptblock]::Create((irm '\(url)'))) -Server 'mac' -RemoveAutoSync")
     // PowerShell also ends single-quoted strings at typographic quotes.
     XCTAssertTrue(ConnectionSetup.windowsQuick(server: "Denis\u{2019}s-Mac", scriptURL: url)
       .hasSuffix("-Server 'Denis\u{2019}\u{2019}s-Mac'"))

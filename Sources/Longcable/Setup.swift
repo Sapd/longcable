@@ -16,6 +16,7 @@ struct SetupView: View {
       + (model.status?.virtualMic?.enabled == true ? ["Longcable Mic"] : [])
   }
   @State private var copied = false
+  @AppStorage("windowsAutoSync") private var autoSync = false
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
@@ -37,9 +38,23 @@ struct SetupView: View {
         if let address = addresses.address(tailscale: tailscale) {
           if platform == "Windows" {
             let describe = Bundle.main.object(forInfoDictionaryKey: "LongcableDescribe") as? String
-            quickSetup(ConnectionSetup.windowsQuick(server: address, scriptURL: ConnectionSetup.scriptURL(
+            let scriptURL = ConnectionSetup.scriptURL(
               describe: describe,
-              commit: Bundle.main.object(forInfoDictionaryKey: "LongcableCommit") as? String)))
+              commit: Bundle.main.object(forInfoDictionaryKey: "LongcableCommit") as? String)
+            quickSetup(ConnectionSetup.windowsQuick(server: address, scriptURL: scriptURL, autoSync: autoSync))
+            Toggle(isOn: $autoSync) {
+              VStack(alignment: .leading, spacing: 2) {
+                Text("Keep this PC in step automatically")
+                Text("Adds a Windows task that checks this Mac every minute, at startup and at login, and follows its changes. Nothing else runs on the PC.")
+                  .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+              }
+            }.toggleStyle(.checkbox)
+            if autoSync {
+              DisclosureGroup("To stop it later") {
+                command("Run on the PC", ConnectionSetup.windowsStopAutoSync(server: address, scriptURL: scriptURL))
+                  .padding(.top, 6)
+              }.font(.callout)
+            }
             if ConnectionSetup.isLocalBuild(describe: describe) {
               Text("This is a local build of Longcable: the command uses the newest released Windows script.")
                 .font(.caption).foregroundStyle(.secondary)

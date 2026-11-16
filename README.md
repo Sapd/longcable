@@ -104,7 +104,8 @@ filter, peer allowlists, the virtual microphone) and installer checks in a sandb
 The Windows setup command has its own end-to-end test against a real PC
 ([`scripts/test-setup-e2e.sh`](scripts/test-setup-e2e.sh)): first setup, re-runs,
 unplugged devices, the same Mac under another name, an unreachable Mac, an older Longcable
-service, a cut-off reply and removal, with other servers' devices left untouched.
+service, a cut-off reply, automatic syncing (install, a change followed by the task,
+removal) and removal of everything, with other servers' devices left untouched.
 
 </details>
 
@@ -165,6 +166,14 @@ The command runs [`setup-windows.ps1`](scripts/setup-windows.ps1) (read it first
 like): it asks the Mac which devices it shares, then attaches them with usbip-win2,
 detaches the ones you stopped sharing and saves the list so Windows reconnects them after
 restarts, without touching devices from other servers.
+
+**Rather not run it again yourself?** Tick **Keep this PC in step automatically** in
+Connect a PC before copying. The command then also adds a Windows scheduled task that
+runs the same script every minute, at startup and at login, so changes on the Mac reach
+the PC within a minute. It's opt-in, uses only Windows' own Task Scheduler (no extra app or
+service), runs a local copy in `C:\Program Files\Longcable` and logs changes to
+`C:\ProgramData\Longcable\sync.log`. To stop it, run the same command with
+`-RemoveAutoSync` instead of `-AutoSync` (Connect a PC shows it).
 
 <p align="center">
   <img src="Artwork/connect-a-pc.png" width="600" alt="Three steps: click Connect a PC in the Longcable window, click Copy command, paste it into an administrator PowerShell on Windows and press Enter">

@@ -42,5 +42,8 @@ serve --no-shared-list;       step oldservice
 serve --broken-shared-list;   step truncated
 serve;                        step byname
                               step unreachable
-                              step removeall
+                              step autosync
+serve --also-shared 1-7;      step autosyncrun
+                              step autosyncremove
+serve;                        step removeall
 if [ $failed -eq 0 ]; then echo "E2E RESULT: ALL PASSED"; else echo "E2E RESULT: FAILED"; exit 1; fi

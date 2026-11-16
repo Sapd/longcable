@@ -28,8 +28,12 @@ public enum ConnectionSetup {
   // One constant command: the script asks the Mac which devices it shares
   // (GET /longcable/v1/shared), so the same line works after every change. It runs
   // from memory, so no execution policy can block it.
-  public static func windowsQuick(server: String, scriptURL: String) -> String {
-    "& ([scriptblock]::Create((irm \(psQuote(scriptURL))))) -Server \(psQuote(server))"
+  // autoSync also installs a Windows scheduled task that repeats the sync every minute.
+  public static func windowsQuick(server: String, scriptURL: String, autoSync: Bool = false) -> String {
+    "& ([scriptblock]::Create((irm \(psQuote(scriptURL))))) -Server \(psQuote(server))" + (autoSync ? " -AutoSync" : "")
+  }
+  public static func windowsStopAutoSync(server: String, scriptURL: String) -> String {
+    "& ([scriptblock]::Create((irm \(psQuote(scriptURL))))) -Server \(psQuote(server)) -RemoveAutoSync"
   }
   // Built from local changes or an unpushed commit: no published script of its own.
   public static func isLocalBuild(describe: String?) -> Bool { describe == "local" }
