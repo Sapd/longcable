@@ -26,9 +26,12 @@ final class Connection {
   let fd: Int32
   private let lifecycle = NSLock()
   private var closed = false
+  private var interrupted = false
   init(_ fd: Int32) { self.fd = fd }
   // Serialize shutdown/close so an old callback cannot shut down a reused descriptor.
-  func interrupt() { lifecycle.withLock { if !closed { shutdown(fd, SHUT_RDWR) } } }
+  func interrupt() { lifecycle.withLock { interrupted = true; if !closed { shutdown(fd, SHUT_RDWR) } } }
+  // True once this side cut the connection, so a failed read was not the PC hanging up.
+  var interruptedHere: Bool { lifecycle.withLock { interrupted } }
   func closeSocket() {
     lifecycle.withLock {
       if !closed {

@@ -800,4 +800,108 @@ final class USBTransferTests: XCTestCase {
       0,0,0,8, 0,0,0,4, 0,0,0,0, 255,255,255,238]))
   }
 
+  // Transfer diagnostics: what the service log shows when a device misbehaves.
+  private func diagnostics() throws -> (Session, Connection, FakeUSBTransport, () -> [String], (Int64) -> Void) {
+    var clock: Int64 = 0
+    var logs = [String]()
+    let lock = NSLock()
+    let (session, peer, transport) = try fixture(now: { lock.withLock { clock } },
+      log: { line in lock.withLock { logs.append(line) } })
+    return (session, peer, transport, { lock.withLock { logs } }, { value in lock.withLock { clock = value } })
+  }
+  func testFailedTransfersAreLoggedFirstThenSummarised() throws {
+    let (session, peer, transport, logs, setClock) = try diagnostics()
+    for seq: UInt32 in 1...3 {
+      XCTAssertTrue(try session.submit(header(seq)))
+      finish(Int(seq) - 1, transport, session, result: kIOReturnError, bytes: 0)
+      XCTAssertEqual(peer.read(48)?.u32(4), seq)
+    }
+    XCTAssertEqual(logs().count, 1)
+    XCTAssertTrue(logs()[0].contains("1-1"), logs()[0])
+    XCTAssertTrue(logs()[0].contains("0x81"), logs()[0])
+    XCTAssertTrue(logs()[0].contains("-5"), logs()[0])
+    setClock(9_999); session.checkTransferWatchdog(); XCTAssertEqual(logs().count, 1)
+    setClock(10_000); session.checkTransferWatchdog()
+    XCTAssertEqual(logs().count, 2)
+    XCTAssertTrue(logs()[1].contains("2 more"), logs()[1])
+    setClock(30_000); session.checkTransferWatchdog(); XCTAssertEqual(logs().count, 2)
+  }
+  func testCancelledTransfersAndControlStallsAreNotLogged() throws {
+    let (session, peer, transport, logs, _) = try diagnostics()
+    XCTAssertTrue(try session.submit(header(1)))
+    finish(0, transport, session, result: kIOReturnAborted, bytes: 0)
+    XCTAssertEqual(peer.read(48)?.u32(4), 1)
+    XCTAssertTrue(try session.submit(header(2, endpoint: 0)))
+    finish(1, transport, session, result: pipeStalled, bytes: 0)
+    XCTAssertEqual(peer.read(48)?.u32(4), 2)
+    session.checkTransferWatchdog()
+    XCTAssertEqual(logs(), [])
+  }
+  private func stream(_ count: Int, endpoint: UInt32 = 1, _ session: Session, _ peer: Connection,
+    _ transport: FakeUSBTransport) throws {
+    for _ in 0..<count {
+      let seq = UInt32(transport.submissions.count + 1)
+      XCTAssertTrue(try session.submit(header(seq, endpoint: endpoint)))
+      finish(transport.submissions.count - 1, transport, session)
+      XCTAssertEqual(peer.read(48)?.u32(4), seq); XCTAssertNotNil(peer.read(4))
+    }
+  }
+  func testStreamingBulkEndpointThatStopsIsLoggedOnceAndWhenItResumes() throws {
+    let (session, peer, transport, logs, setClock) = try diagnostics()
+    try stream(20, session, peer, transport)
+    XCTAssertTrue(try session.submit(header(100)))
+    setClock(5_000); session.checkTransferWatchdog(); XCTAssertEqual(logs(), [])
+    setClock(5_001); session.checkTransferWatchdog()
+    XCTAssertEqual(logs().count, 1)
+    XCTAssertTrue(logs()[0].contains("1-1") && logs()[0].contains("0x81"), logs()[0])
+    XCTAssertTrue(logs()[0].contains("stopped"), logs()[0])
+    setClock(20_000); session.checkTransferWatchdog(); XCTAssertEqual(logs().count, 1)
+    setClock(37_000)
+    finish(transport.submissions.count - 1, transport, session)
+    XCTAssertEqual(peer.read(48)?.u32(4), 100)
+    XCTAssertEqual(logs().count, 2)
+    XCTAssertTrue(logs()[1].contains("0x81") && logs()[1].contains("37"), logs()[1])
+  }
+  func testQuietOrInterruptEndpointsAreNotReportedAsStopped() throws {
+    let (session, peer, transport, logs, setClock) = try diagnostics()
+    try stream(19, session, peer, transport)
+    XCTAssertTrue(try session.submit(header(100)))
+    try stream(50, endpoint: 2, session, peer, transport)
+    XCTAssertTrue(try session.submit(header(200, endpoint: 2)))
+    setClock(60_000); session.checkTransferWatchdog()
+    XCTAssertEqual(logs(), [])
+  }
+  func testControlRequestThatDoesNotFinishIsLoggedOnce() throws {
+    let (session, _, _, logs, setClock) = try diagnostics()
+    XCTAssertTrue(try session.submit(header(1, endpoint: 0)))
+    setClock(5_000); session.checkTransferWatchdog(); XCTAssertEqual(logs(), [])
+    setClock(5_001); session.checkTransferWatchdog()
+    XCTAssertEqual(logs().count, 1)
+    XCTAssertTrue(logs()[0].contains("control") && logs()[0].contains("c0 01"), logs()[0])
+    setClock(9_000); session.checkTransferWatchdog(); XCTAssertEqual(logs().count, 1)
+  }
+  func testSessionRemembersWhyItEnded() throws {
+    let (session, peer, transport, _, _) = try diagnostics()
+    XCTAssertNil(session.endReason)
+    XCTAssertTrue(try session.submit(header(1)))
+    finish(0, transport, session, result: kIOReturnNoDevice, bytes: 0)
+    XCTAssertEqual(session.endReason, "the device stopped answering on the Mac")
+    _ = peer
+    let (other, otherPeer, otherTransport, _, _) = try diagnostics()
+    XCTAssertTrue(try other.submit(header(1)))
+    otherPeer.closeSocket()
+    finish(0, otherTransport, other)
+    XCTAssertEqual(other.endReason, "could not send to the PC")
+  }
+  func testConnectionKnowsWhetherThisSideInterruptedIt() throws {
+    var fds: [Int32] = [0, 0]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+    let a = Connection(fds[0]), b = Connection(fds[1])
+    XCTAssertFalse(a.interruptedHere)
+    b.closeSocket()
+    XCTAssertNil(a.read(48, idle: true))
+    XCTAssertFalse(a.interruptedHere)
+    a.interrupt()
+    XCTAssertTrue(a.interruptedHere)
+  }
 }

@@ -40,6 +40,8 @@ final class Transfer {
   var request: IOUSBDeviceRequest?
   var zeroPacketPhase = false
   var payloadBytes = 0
+  var started: Int64 = 0
+  var slowLogged = false
   var address: UInt8 { endpoint == 0 ? 0 : UInt8(endpoint | (direction == 1 ? 0x80 : 0)) }
   var expectedLength: Int { request.map { Int($0.wLength) } ?? data.length }
   init(seq: UInt32, direction: UInt32, endpoint: UInt32, length: Int) {
@@ -70,6 +72,24 @@ final class Session {
   }
   private var isoProgress = [UInt8: IsoProgress]()
   private var isoWatchdog: DispatchSourceTimer?
+  // Diagnostics for the service log: failed transfers (the first one, then a count
+  // per 10 s), streaming bulk endpoints that stop, control requests that never finish.
+  private struct Flow {
+    var lastCompletion: Int64 = 0
+    var streak = 0
+    var stoppedAt: Int64?
+  }
+  private var flows = [UInt8: Flow]()
+  private var errorWindow: Int64?
+  private var unreportedErrors = 0
+  private var lastUnreported = ""
+  private let endLock = NSLock()
+  private var endReasonValue: String?
+  // Why the connection ended, when this side knows; written next to "Released".
+  var endReason: String? { endLock.withLock { endReasonValue } }
+  private func noteEnd(_ reason: String) {
+    endLock.withLock { if endReasonValue == nil { endReasonValue = reason } }
+  }
   private let now: () -> Int64
   private let log: (String) -> Void
   init(_ target: SessionTarget, _ connection: Connection, transport: USBTransferTransport? = nil,
@@ -146,10 +166,54 @@ final class Session {
     }
     if ok && !job.isoPackets.isEmpty { ok = connection.write(IsoPacket.encode(job.isoPackets)) }
     target.transfer(count, status: status, pending: pending.count, native: result)
+    noteTransfer(job, status: status, result: result)
+    if !ok { noteEnd("could not send to the PC") }
+    else if result == kIOReturnNoDevice || result == kIOReturnNotAttached {
+      noteEnd("the device stopped answering on the Mac")
+    }
     if !ok || result == kIOReturnNoDevice || result == kIOReturnNotAttached {
       transportBroken = true
       connection.interrupt()
     }
+  }
+  private func endpointName(_ job: Transfer) -> String {
+    guard let request = job.request else { return String(format: "endpoint 0x%02x", job.address) }
+    return String(format: "control request %02x %02x %04x %04x %d", request.bmRequestType,
+      request.bRequest, request.wValue, request.wIndex, request.wLength)
+  }
+  private func noteTransfer(_ job: Transfer, status: Int32, result: IOReturn) {
+    let at = now()
+    // Cancelled requests are routine, and devices answer unsupported control requests with a stall.
+    if status != 0 && status != -104 && !(job.endpoint == 0 && status == -32) {
+      let detail = endpointName(job) + String(format: ": USB status %d (0x%08x)", status, UInt32(bitPattern: result))
+      if let start = errorWindow, at - start < 10_000 {
+        unreportedErrors += 1
+        lastUnreported = detail
+      } else {
+        reportErrors()
+        errorWindow = at
+        log("\(target.busID): transfer failed on \(detail)")
+      }
+    }
+    // Interrupt endpoints go quiet whenever nobody types or moves the mouse; only bulk
+    // endpoints that were streaming are worth reporting when they stop.
+    guard job.endpoint != 0, job.isoPackets.isEmpty, transport?.endpointType(job.address) == 2 else { return }
+    var flow = flows[job.address] ?? Flow()
+    if let stopped = flow.stoppedAt {
+      log("\(target.busID): \(endpointName(job)) is moving again after \((at - stopped) / 1000)s")
+      flow.stoppedAt = nil
+      flow.streak = 0
+    }
+    flow.streak += 1
+    flow.lastCompletion = at
+    flows[job.address] = flow
+  }
+  private func reportErrors() {
+    if unreportedErrors > 0 {
+      log("\(target.busID): \(unreportedErrors) more transfer failures, the last on \(lastUnreported)")
+    }
+    unreportedErrors = 0
+    errorWindow = nil
   }
   private func callback(_ job: Transfer) -> (IOReturn, Int) -> Void {
     { [weak self, job] result, bytes in
@@ -241,8 +305,8 @@ final class Session {
           progress.lastCompletion = now(); progress.logged = false
           isoProgress[job.address] = progress
         }
-        startIsoWatchdog()
       }
+      startWatchdog()
       pending[seq] = job
       queued[job.address, default: []].append(job)
       target.queued(pending.count)
@@ -262,6 +326,7 @@ final class Session {
     queued[address] = jobs
     guard pending[job.seq] === job else { startNext(address); return }
     active[address, default: []].append(job)
+    job.started = now()
     // DMA allocation, buffer ownership and callback scheduling flags are host-local
     // metadata. ISO_ASAP is meaningful only for an isochronous pipe.
     let supportedFlags: UInt32 = 0x1 | 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200
@@ -371,11 +436,11 @@ final class Session {
       }
     } catch { finish(job, result: nativeError(error), bytes: 0) }
   }
-  private func startIsoWatchdog() {
+  private func startWatchdog() {
     guard isoWatchdog == nil else { return }
     let timer = DispatchSource.makeTimerSource(queue: operations)
     timer.schedule(deadline: .now() + 1, repeating: 1)
-    timer.setEventHandler { [weak self] in self?.checkIsoWatchdog() }
+    timer.setEventHandler { [weak self] in self?.checkTransferWatchdog() }
     isoWatchdog = timer
     timer.resume()
   }
@@ -391,6 +456,27 @@ final class Session {
         let running = active[address]?.count ?? 0
         let queuedCount = queued[address]?.count ?? 0
         log("Iso endpoint \(String(format: "0x%02x", address)) stalled >2s generation \(progress.generation) active \(running) queued \(queuedCount) pending \(waiting)")
+      }
+    }
+  }
+  // Internal entry point lets tests advance a fake clock without sleeping.
+  func checkTransferWatchdog() {
+    checkIsoWatchdog()
+    serialized {
+      guard !closed else { return }
+      let at = now()
+      if let start = errorWindow, at - start >= 10_000 { reportErrors() }
+      for (address, var flow) in flows where flow.stoppedAt == nil && flow.streak >= 20
+        && at - flow.lastCompletion > 5000 {
+        let waiting = active[address]?.filter { pending[$0.seq] === $0 }.count ?? 0
+        guard waiting > 0 else { continue }
+        flow.stoppedAt = flow.lastCompletion
+        flows[address] = flow
+        log("\(target.busID): \(String(format: "endpoint 0x%02x", address)) stopped: no data for 5s after \(flow.streak) transfers (\(waiting) waiting)")
+      }
+      for job in active[0] ?? [] where pending[job.seq] === job && !job.slowLogged && at - job.started > 5000 {
+        job.slowLogged = true
+        log("\(target.busID): \(endpointName(job)) has not finished after 5s")
       }
     }
   }
@@ -441,11 +527,14 @@ final class Session {
     defer {
       shutdownTransfers()
       target.ended()
-      EventLog.shared.write("Released \(target.busID)")
+      EventLog.shared.write("Released \(target.busID)" + (endReason.map { " (\($0))" } ?? ""))
     }
     do {
       let identity = target.identity!
-      let opened = try target.openDevice(identity) { [weak self] in self?.connection.interrupt() }
+      let opened = try target.openDevice(identity) { [weak self] in
+        self?.noteEnd("unplugged or reset on the Mac")
+        self?.connection.interrupt()
+      }
       serialized {
         device = opened
         transport = opened
@@ -454,10 +543,12 @@ final class Session {
       target.attached(opened.location)
       EventLog.shared.write("Imported \(target.busID) physical port \(String(format:"%08x",opened.location))")
       while let h = connection.read(48, idle: true) {
-        if h.u32(0) == 1 { if try !submit(h) { break } }
+        if h.u32(0) == 1 { if try !submit(h) { noteEnd("refused a request from the PC"); break } }
         else if h.u32(0) == 2 { unlink(h) }
-        else { break }
+        else { noteEnd("unknown command from the PC"); break }
       }
+      // Reconnect, unshare and shutdown interrupt from this side and log their own line.
+      if !connection.interruptedHere { noteEnd("the PC closed the connection or the network dropped") }
     } catch {
       target.failed(error)
       EventLog.shared.write("\(target.busID): \(error)")
