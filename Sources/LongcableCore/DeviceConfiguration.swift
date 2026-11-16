@@ -43,6 +43,8 @@ struct StorePaths {
   let state: String
   let launchDaemon: String
   var peers: String { (state as NSString).deletingLastPathComponent + "/peers.json" }
+  var virtualMic: String { (state as NSString).deletingLastPathComponent + "/virtual-mic.json" }
+  var microphones: String { (state as NSString).deletingLastPathComponent + "/microphones.json" }
   static let live = StorePaths(targets: Paths.targets, state: Paths.state,
     launchDaemon: "/Library/LaunchDaemons/org.sapd.longcable.plist")
 }

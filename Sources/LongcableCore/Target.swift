@@ -4,7 +4,7 @@ import Darwin
 import Foundation
 import IOKit
 
-final class Target {
+final class Target: SessionTarget {
   let config: TargetConfig
   private var rememberedConfig: TargetConfig
   private let matchingLock = NSLock()
@@ -43,6 +43,14 @@ final class Target {
     busID = "1-\(slot+1)"
     wireID = 0x10001 + UInt32(slot)
     location = String(format: "%08x", config.location)
+  }
+  var overlayLabel: String { config.label }
+  func openDevice(_ identity: Identity, disconnected: @escaping () -> Void) throws -> SessionDevice {
+    let device = CapturedDevice()
+    device.disconnected = disconnected
+    try device.open(matchingConfig, configuration: identity.configuration,
+      expectedRegistryID: identity.registryID == 0 ? nil : identity.registryID)
+    return device
   }
   var isEnabled: Bool { stateLock.withLock { enabled } }
   func setEnabled(_ value: Bool) {
@@ -132,12 +140,19 @@ final class Target {
       return false
     }
   }
-  func snapshot(present: Bool = true) -> DeviceStatus {
+  // What macOS last reported for this device without opening it (name, audio).
+  private var seenName: String?, seenAudio: Bool?
+  func snapshot(present: Bool = true, seen: LocalUSBDevice? = nil) -> DeviceStatus {
     let pinned = matchingConfig.portBound == true
     return stateLock.withLock {
-      DeviceStatus(
+      if let seen {
+        if !seen.name.trimmingCharacters(in: .whitespaces).isEmpty { seenName = seen.name }
+        // Never downgrade: while Windows has it, macOS may stop listing its interfaces.
+        if let audio = seen.audio, audio || seenAudio == nil { seenAudio = audio }
+      }
+      return DeviceStatus(
         id: busID,
-        name: [identity?.name, config.productName, config.label]
+        name: [identity?.name, seenName, config.productName, config.label]
           .compactMap { $0?.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? busID,
         model: String(format: "%04x:%04x", config.vendor, config.product),
         serial: identity?.serial ?? config.label, enabled: enabled,
@@ -145,7 +160,8 @@ final class Target {
         location: location, completed: completed, bytes: bytes, errors: errors, pending: pending,
         lastActivity: lastActivity, lastError: pinned && !present
           ? "Identical device: bound to its USB port. Plug it back into the same port or share it again."
-          : lastError)
+          : lastError,
+        audio: seenAudio)
     }
   }
 }

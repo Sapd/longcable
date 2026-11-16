@@ -162,7 +162,7 @@ func loadIdentity(_ config: TargetConfig, busID: String, wireID: UInt32) throws 
       registryID: registryID)
   }
 }
-final class CapturedDevice: USBTransferTransport {
+final class CapturedDevice: SessionDevice {
   var device: IOUSBHostDevice?
   var interfaces = [IOUSBHostInterface]()
   private struct NativePipe {
@@ -338,12 +338,42 @@ final class CapturedDevice: USBTransferTransport {
   deinit { release() }
 }
 
-public struct LocalUSBDevice: Codable, Sendable {
+public struct LocalUSBDevice: Codable, Sendable, Equatable {
   public let vendor: String
   public let product: String
   public let location: String
   public let name: String
   public let serial: String
+  // A USB microphone (see isMicrophone): offered in the app's Microphone card
+  // instead of the general device list.
+  public var audio: Bool? = nil
+  public init(vendor: String, product: String, location: String, name: String, serial: String, audio: Bool? = nil) {
+    self.vendor = vendor; self.product = product; self.location = location
+    self.name = name; self.serial = serial; self.audio = audio
+  }
+}
+// A microphone has an audio streaming interface (class 1, subclass 2) and no camera
+// part (class 14): MIDI keyboards have no audio streaming, webcams with a built-in
+// microphone stay ordinary devices. Which way the audio flows isn't visible without
+// opening the device, so a USB speaker would count too.
+func isMicrophone(interfaces: [(UInt32, UInt32)]) -> Bool {
+  interfaces.contains { $0 == (1, 2) } && !interfaces.contains { $0.0 == 14 }
+}
+// (class, subclass) of the interfaces below a device, sometimes under a configuration.
+func interfaceClasses(_ service: io_service_t, depth: Int = 0) -> [(UInt32, UInt32)] {
+  guard depth < 3 else { return [] }
+  var children: io_iterator_t = 0
+  guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &children) == KERN_SUCCESS else { return [] }
+  defer { IOObjectRelease(children) }
+  var found = [(UInt32, UInt32)]()
+  while case let child = IOIteratorNext(children), child != 0 {
+    defer { IOObjectRelease(child) }
+    if IORegistryEntryCreateCFProperty(child, "bInterfaceClass" as CFString, kCFAllocatorDefault, 0) != nil {
+      found.append((number(child, "bInterfaceClass"), number(child, "bInterfaceSubClass")))
+    }
+    found += interfaceClasses(child, depth: depth + 1)
+  }
+  return found
 }
 func deviceMayBeShared(vendor: UInt32, product: UInt32, location: UInt32,
                        configured: [TargetConfig]) -> Bool {
@@ -380,7 +410,8 @@ public func discoverUSBDevices(allowedAppleDevices: [TargetConfig] = []) -> [Loc
       LocalUSBDevice(
         vendor: String(format: "%04x", vendor), product: String(format: "%04x", product),
         location: String(format: "%08x", number(service, "locationID")),
-        name: text(service, "USB Product Name"), serial: text(service, "USB Serial Number")))
+        name: text(service, "USB Product Name"), serial: text(service, "USB Serial Number"),
+        audio: isMicrophone(interfaces: interfaceClasses(service))))
   }
   return result.sorted { $0.location < $1.location }
 }

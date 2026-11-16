@@ -13,6 +13,9 @@ import LongcableCore
   @Published var showInDock = (UserDefaults.standard.object(forKey: "showInDock") as? Bool) ?? true
   @Published var setupIssue: String?
   @Published var showingSetup = false
+  // One microphone switch at a time, from the card or the menu.
+  @Published var choosingMicrophone = false
+  @Published var microphoneError: String?
   private var polling = false
   private var pollTask: Task<Void, Never>?
   init() {
@@ -34,6 +37,7 @@ import LongcableCore
       status = reply.status
       online = reply.ok
       if reply.ok { error = nil } else { error = reply.message }
+      if reply.ok { await MicSharingModel.shared.reconcile(service: reply.status?.virtualMic?.enabled) }
     case .failure(let failure):
       online = false
       error = String(describing: failure)
@@ -159,7 +163,7 @@ struct MenuContent: View {
   var body: some View {
     Text(model.online ? "USB sharing is running" : "USB sharing is unavailable")
     if let status = model.status {
-      ForEach(status.devices) { device in
+      ForEach(status.devices.filter { $0.audio != true }) { device in
         Menu(device.name) {
           Text(device.displayState)
           Button(device.enabled ? "Stop Sharing" : "Share with Windows") {
@@ -169,6 +173,7 @@ struct MenuContent: View {
         }.disabled(!model.online || model.busy.contains(device.id))
       }
     }
+    MicMenuItem(model: model)
     Divider()
     Button("Open Longcable Server…") {
       openWindow(id: "devices")
@@ -218,14 +223,14 @@ struct SharingView: View {
         VStack(alignment: .leading, spacing: 18) {
           HStack {
             VStack(alignment: .leading, spacing: 4) {
-              Text("\(connected) devices connected").font(.headline)
+              Text(connected == 1 ? "1 device connected" : "\(connected) devices connected").font(.headline)
               if let status = model.status {
                 Text("Allowed peers · \((status.allowedPeers ?? [status.peer]).joined(separator: ", "))")
                   .font(.caption).foregroundStyle(.secondary)
               }
             }
             Spacer()
-            Button("Connect a PC") { model.showingSetup = true }
+            Button("Connect a PC") { model.showingSetup = true }.buttonStyle(.borderedProminent)
             Button {
               model.showingSetup = true
             } label: { Image(systemName: "gearshape") }.help("Connection Setup").accessibilityLabel("Connection Setup")
@@ -247,8 +252,10 @@ struct SharingView: View {
               .foregroundStyle(.orange).textSelection(.enabled)
           }
           if let status = model.status {
-            ForEach(status.devices) { device in DeviceCard(device: device, model: model) }
-            if let available = status.availableDevices, !available.isEmpty {
+            // USB microphones are offered in the Microphone card instead.
+            ForEach(status.devices.filter { $0.audio != true }) { device in DeviceCard(device: device, model: model) }
+            MicCard(model: model)
+            if let available = status.availableDevices?.filter({ $0.audio != true }), !available.isEmpty {
               Text("Other USB devices").font(.headline).padding(.top, 8)
               Text(
                 "Click Share once. Your choice is remembered when you reconnect the device, even in another port."

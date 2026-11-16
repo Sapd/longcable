@@ -9,13 +9,21 @@ struct SetupView: View {
   @State private var addresses = ConnectionAddresses()
   @State private var tailscale = false
   @State private var platform = "Windows"
-  var busIDs: [String] { model.status?.devices.filter(\.enabled).map(\.id) ?? [] }
+  var busIDs: [String] { ConnectionSetup.sharedBusIDs(model.status) }
+  // What the command connects, in words the user recognises.
+  var sharedNames: [String] {
+    (model.status?.devices.filter(\.enabled).map(\.name) ?? [])
+      + (model.status?.virtualMic?.enabled == true ? ["Longcable Mic"] : [])
+  }
+  @State private var copied = false
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
         Text("Connect a PC").font(.title2.bold())
-        Text("Tick devices in the main window, then run these commands on your PC.")
-          .foregroundStyle(.secondary)
+        Text(platform == "Windows"
+          ? "Copy one command and run it on your Windows PC. After you share, stop sharing or add devices on this Mac, run the same command again: the PC then matches this Mac."
+          : "Tick devices (and choose a microphone) in the main window, then run these commands on your PC.")
+          .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         Text("Tailscale: \(addresses.tailscaleIP ?? "unavailable")\(addresses.magicDNS.map { " · " + $0 } ?? "")")
         Text("LAN: \(addresses.lanIP ?? "unavailable")")
         Picker("Network", selection: $tailscale) {
@@ -28,12 +36,22 @@ struct SetupView: View {
         }.pickerStyle(.segmented)
         if let address = addresses.address(tailscale: tailscale) {
           if platform == "Windows" {
-            command("Quick setup · administrator PowerShell", ConnectionSetup.windowsQuick(server: address))
-            command("Or attach manually · usbip-win2", ConnectionSetup.windowsManual(server: address, busIDs: busIDs))
+            let describe = Bundle.main.object(forInfoDictionaryKey: "LongcableDescribe") as? String
+            quickSetup(ConnectionSetup.windowsQuick(server: address, scriptURL: ConnectionSetup.scriptURL(
+              describe: describe,
+              commit: Bundle.main.object(forInfoDictionaryKey: "LongcableCommit") as? String)))
+            if ConnectionSetup.isLocalBuild(describe: describe) {
+              Text("This is a local build of Longcable: the command uses the newest released Windows script.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Manual commands (usbip-win2)") {
+              command("Attach manually", ConnectionSetup.windowsManual(server: address, busIDs: busIDs))
+                .padding(.top, 6)
+            }.font(.callout)
           } else {
             command("Linux", ConnectionSetup.linux(server: address, busIDs: busIDs))
           }
-          if busIDs.isEmpty { Text("Share a device to include its attach command.").font(.caption) }
+          if busIDs.isEmpty && platform != "Windows" { Text("Share a device to include its attach command.").font(.caption) }
         } else { Text("No address detected for this network. Check your connection.").foregroundStyle(.orange) }
         Divider()
         Text("Waiting for connections").font(.headline)
@@ -60,6 +78,33 @@ struct SetupView: View {
       tailscale = detected.prefersTailscale
     }
   }
+  // The one step most people need, made obvious.
+  func quickSetup(_ text: String) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Label("Run this on your Windows PC", systemImage: "pc").font(.headline)
+      Text("Paste it into PowerShell or Windows Terminal opened as administrator, then press Enter.")
+        .font(.callout).foregroundStyle(.secondary)
+      Text(PowerShellHighlight.attributed(text)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      HStack(alignment: .firstTextBaseline) {
+        Button {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(text, forType: .string)
+          copied = true
+          Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copied = false }
+        } label: {
+          Label(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "doc.on.doc")
+            .frame(minWidth: 140)
+        }.buttonStyle(.borderedProminent).controlSize(.large)
+        Text(sharedNames.isEmpty ? "Nothing is shared yet." : "Connects: " + sharedNames.joined(separator: ", "))
+          .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      }
+    }.padding(14)
+      .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+      .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.35)))
+  }
   func command(_ title: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
@@ -70,7 +115,7 @@ struct SetupView: View {
           NSPasteboard.general.setString(text, forType: .string)
         }
       }
-      Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+      Text(PowerShellHighlight.attributed(text)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading).padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
@@ -78,13 +123,15 @@ struct SetupView: View {
 }
 
 struct DeviceWindowsCommandView: View {
-  let device: DeviceStatus
+  let name: String, busID: String
+  init(device: DeviceStatus) { name = device.name; busID = device.id }
+  init(name: String, busID: String) { self.name = name; self.busID = busID }
   @State private var addresses = ConnectionAddresses()
   @State private var tailscale = false
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Windows command").font(.headline)
-      Text(device.name + " · " + device.id).font(.caption).foregroundStyle(.secondary)
+      Text(name + " · " + busID).font(.caption).foregroundStyle(.secondary)
       if addresses.address(tailscale: true) != nil && addresses.lanIP != nil {
         Picker("Network", selection: $tailscale) {
           Text("Tailscale").tag(true)
@@ -92,7 +139,7 @@ struct DeviceWindowsCommandView: View {
         }.pickerStyle(.segmented).controlSize(.small)
       }
       if let address = addresses.address(tailscale: tailscale) {
-        let text = ConnectionSetup.windowsDevice(server: address, busID: device.id)
+        let text = ConnectionSetup.windowsDevice(server: address, busID: busID)
         HStack {
           Text("Run in administrator PowerShell").font(.subheadline)
           Spacer()
@@ -102,7 +149,7 @@ struct DeviceWindowsCommandView: View {
           }.controlSize(.small)
         }
         // Popovers don't propose a height; without fixedSize the block collapses to one line.
-        Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        Text(PowerShellHighlight.attributed(text)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading).padding(10)
           .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))

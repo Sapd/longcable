@@ -16,7 +16,14 @@ final class ConnectionSetupTests: XCTestCase {
     XCTAssertNil(ConnectionAddresses().address(tailscale: true))
   }
   func testWindowsCommands() {
-    XCTAssertEqual(ConnectionSetup.windowsQuick(server: "mac"), "irm https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1 -OutFile $env:TEMP\\longcable-setup.ps1; & $env:TEMP\\longcable-setup.ps1 -Server 'mac'")
+    // One constant command: the script asks the Mac for its list, so the same line
+    // works after any change. It runs from memory, so no execution policy blocks it.
+    let url = "https://github.com/Sapd/longcable/releases/download/v1.2.3/setup-windows.ps1"
+    XCTAssertEqual(ConnectionSetup.windowsQuick(server: "mac", scriptURL: url),
+      "& ([scriptblock]::Create((irm '\(url)'))) -Server 'mac'")
+    // PowerShell also ends single-quoted strings at typographic quotes.
+    XCTAssertTrue(ConnectionSetup.windowsQuick(server: "Denis\u{2019}s-Mac", scriptURL: url)
+      .hasSuffix("-Server 'Denis\u{2019}\u{2019}s-Mac'"))
     XCTAssertEqual(ConnectionSetup.windowsManual(server: "mac", busIDs: ["1-1", "1-2"]), """
     $usbip = 'C:\\Program Files\\USBip\\usbip.exe'
     & $usbip list -r 'mac'
@@ -25,6 +32,40 @@ final class ConnectionSetupTests: XCTestCase {
     & $usbip port --stash
     """)
   }
+  private func device(_ id: String, enabled: Bool) -> DeviceStatus {
+    DeviceStatus(id: id, name: id, model: "231d:0200", serial: id, enabled: enabled, state: "",
+      location: "", completed: 0, bytes: 0, errors: 0, pending: 0, lastActivity: nil, lastError: nil)
+  }
+  private func status(mic: Bool?) -> ServerStatus {
+    ServerStatus(version: "", started: Date(), listen: "", peer: "",
+      devices: [device("1-1", enabled: true), device("1-2", enabled: false), device("1-3", enabled: true)],
+      virtualMic: mic.map { VirtualMicStatus(enabled: $0, state: "", sourceConnected: false, bytes: 0, errors: 0) })
+  }
+  func testSharedBusIDsIncludeLongcableMicWhenOn() {
+    XCTAssertEqual(ConnectionSetup.sharedBusIDs(status(mic: true)), ["1-1", "1-3", "2-1"])
+    XCTAssertEqual(ConnectionSetup.sharedBusIDs(status(mic: false)), ["1-1", "1-3"])
+    XCTAssertEqual(ConnectionSetup.sharedBusIDs(status(mic: nil)), ["1-1", "1-3"], "older service")
+    XCTAssertEqual(ConnectionSetup.sharedBusIDs(nil), [])
+  }
+
+  // The script matches the Mac: a release build uses its own release's script; a
+  // build between releases uses the script from its exact commit.
+  func testScriptURLFollowsTheBuild() {
+    XCTAssertEqual(ConnectionSetup.scriptURL(describe: "v0.4.0", commit: "abc"),
+      "https://github.com/Sapd/longcable/releases/download/v0.4.0/setup-windows.ps1")
+    XCTAssertEqual(ConnectionSetup.scriptURL(describe: "v0.3.2-27-ge0c0436", commit: "e0c0436ffff"),
+      "https://raw.githubusercontent.com/Sapd/longcable/e0c0436ffff/scripts/setup-windows.ps1")
+    XCTAssertEqual(ConnectionSetup.scriptURL(describe: nil, commit: nil),
+      "https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1")
+    // Unpushed or locally changed builds have no published script of their own.
+    XCTAssertEqual(ConnectionSetup.scriptURL(describe: "local", commit: ""),
+      "https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1")
+    XCTAssertTrue(ConnectionSetup.isLocalBuild(describe: "local"))
+    XCTAssertFalse(ConnectionSetup.isLocalBuild(describe: "v0.4.0"))
+    XCTAssertEqual(ConnectionSetup.scriptURL(describe: "v0.3.2-1-gabc", commit: "not a sha"),
+      "https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1")
+  }
+
   func testWindowsDeviceCommandIncludesOnlyOneDevice() {
     XCTAssertEqual(ConnectionSetup.windowsDevice(server: "192.168.1.2", busID: "1-2"), """
     $usbip = 'C:\\Program Files\\USBip\\usbip.exe'
@@ -54,7 +95,7 @@ final class ConnectionSetupTests: XCTestCase {
   }
   func testLinuxCommandsAndQuoting() {
     XCTAssertEqual(ConnectionSetup.linux(server: "192.168.1.2", busIDs: ["1-1"]), "sudo modprobe vhci-hcd\nusbip list -r '192.168.1.2'\nsudo usbip attach -r '192.168.1.2' -b '1-1'")
-    XCTAssertTrue(ConnectionSetup.windowsQuick(server: "a'b").hasSuffix("-Server 'a''b'"))
+    XCTAssertTrue(ConnectionSetup.windowsQuick(server: "a'b", scriptURL: "https://x/y'z").hasSuffix("(irm 'https://x/y''z'))) -Server 'a''b'"))
     XCTAssertEqual(ConnectionSetup.linux(server: "a'b", busIDs: []), "sudo modprobe vhci-hcd\nusbip list -r 'a'\\''b'")
   }
 }

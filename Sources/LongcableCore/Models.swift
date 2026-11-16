@@ -60,6 +60,7 @@ public struct DaemonConfig {
   public let listen: String
   public let peer: String
   public let targets: [TargetConfig]
+  public var port: UInt16 = 3240
   public var allowsAnyPeer: Bool { peer == "any" }
   public var securityWarning: String? {
     allowsAnyPeer ? "WARNING: ANY PEER CAN CAPTURE SHARED USB DEVICES. USB/IP HAS NO AUTHENTICATION OR ENCRYPTION. Use a trusted LAN or Tailscale." : nil
@@ -130,6 +131,15 @@ public struct DeviceStatus: Codable, Identifiable, Sendable {
   public var pending: Int
   public var lastActivity: Date?
   public var lastError: String?
+  public var audio: Bool? = nil
+  public init(id: String, name: String, model: String, serial: String, enabled: Bool, state: String,
+              location: String, completed: UInt64, bytes: UInt64, errors: UInt64, pending: Int,
+              lastActivity: Date?, lastError: String?, audio: Bool? = nil) {
+    self.id = id; self.name = name; self.model = model; self.serial = serial; self.enabled = enabled
+    self.state = state; self.location = location; self.completed = completed; self.bytes = bytes
+    self.errors = errors; self.pending = pending; self.lastActivity = lastActivity
+    self.lastError = lastError; self.audio = audio
+  }
 }
 public struct ServerStatus: Codable, Sendable {
   public var version: String
@@ -140,14 +150,18 @@ public struct ServerStatus: Codable, Sendable {
   public var refusedPeers: [RefusedPeer]? = nil
   public var allowedPeers: [String]? = nil
   public var availableDevices: [LocalUSBDevice]? = nil
+  public var virtualMic: VirtualMicStatus? = nil
 }
 public struct ControlRequest: Codable, Sendable {
   public var action: String
   public var busID: String?
   public var peer: String?
   public var device: LocalUSBDevice?
-  public init(action: String, busID: String? = nil, device: LocalUSBDevice? = nil, peer: String? = nil) {
+  public var enabled: Bool?
+  public init(action: String, busID: String? = nil, device: LocalUSBDevice? = nil, peer: String? = nil,
+              enabled: Bool? = nil) {
     self.peer = peer
+    self.enabled = enabled
     self.action = action
     self.busID = busID
     self.device = device
@@ -161,6 +175,7 @@ public struct ControlReply: Codable, Sendable {
 public enum Paths {
   public static let directory = "/var/run/longcable"
   public static let socket = directory + "/control.sock"
+  public static let audioSocket = directory + "/audio.sock"
   public static let state = "/Library/Application Support/Longcable/sharing.json"
   public static let targets = "/Library/Application Support/Longcable/targets.json"
   public static let log = "/Library/Logs/Longcable/swift-server.log"

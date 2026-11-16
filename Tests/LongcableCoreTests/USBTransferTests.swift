@@ -263,6 +263,22 @@ final class USBTransferTests: XCTestCase {
     XCTAssertEqual(peer.read(48)?.u32(20), 0)
     XCTAssertEqual(try XCTUnwrap(peer.read(18))[16], 254)
   }
+  // Identical physical devices are told apart by the overlaid serial string,
+  // which comes from the target's label through SessionTarget.overlayLabel.
+  func testOverlaidSerialStringCarriesTargetLabel() throws {
+    let (session, peer, _) = try fixture()
+    session.target.identity?.overlaySerial = true
+    var request = header(1, endpoint: 0, length: 255)
+    request[40] = 0x80; request[41] = 6; request[42] = 0xfe; request[43] = 3
+    request[46] = 0xff
+    XCTAssertTrue(try session.submit(request))
+    session.synchronize()
+    let reply = try XCTUnwrap(peer.read(48))
+    XCTAssertEqual(reply.u32(20), 0)
+    let expected = serialDescriptor("TEST")
+    XCTAssertEqual(Int(reply.u32(24)), expected.count)
+    XCTAssertEqual(peer.read(expected.count), expected)
+  }
   func testUnsupportedFlagsReturnExplicitErrorWithoutBreakingFollowingRequest() throws {
     let (session, peer, transport) = try fixture()
     XCTAssertTrue(try session.submit(header(1, flags: 0x8000_0000)))

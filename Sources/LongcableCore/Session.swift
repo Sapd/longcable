@@ -50,9 +50,10 @@ final class Transfer {
   }
 }
 final class Session {
-  let target: Target, connection: Connection
-  let usb = CapturedDevice()
-  let transport: USBTransferTransport
+  let target: SessionTarget, connection: Connection
+  private var device: SessionDevice?
+  // Injected in tests; opened from the target in run() otherwise.
+  private(set) var transport: USBTransferTransport!
   private let operations = DispatchQueue(label: "org.sapd.longcable.session.operations")
   private let operationKey = DispatchSpecificKey<Bool>()
   // pending tracks requests still owed a wire reply. active retains unlinked
@@ -71,13 +72,13 @@ final class Session {
   private var isoWatchdog: DispatchSourceTimer?
   private let now: () -> Int64
   private let log: (String) -> Void
-  init(_ target: Target, _ connection: Connection, transport: USBTransferTransport? = nil,
+  init(_ target: SessionTarget, _ connection: Connection, transport: USBTransferTransport? = nil,
     now: @escaping () -> Int64 = monotonicMS,
     log: @escaping (String) -> Void = { EventLog.shared.write($0) }) {
     self.now = now; self.log = log
     self.target = target
     self.connection = connection
-    self.transport = transport ?? usb
+    self.transport = transport
     operations.setSpecific(key: operationKey, value: true)
   }
   @discardableResult private func serialized<T>(_ operation: () throws -> T) rethrows -> T {
@@ -275,7 +276,7 @@ final class Session {
       if let request = job.request {
         if target.identity?.overlaySerial == true && request.bmRequestType == 0x80
           && request.bRequest == 6 && request.wValue == 0x03fe {
-          let descriptor = serialDescriptor(target.config.label)
+          let descriptor = serialDescriptor(target.overlayLabel)
           let count = min(descriptor.count, Int(request.wLength))
           descriptor.copyBytes(to: job.data.mutableBytes.assumingMemoryBound(to: UInt8.self), count: count)
           finish(job, result: kIOReturnSuccess, bytes: count)
@@ -431,13 +432,12 @@ final class Session {
       isoWatchdog?.cancel(); isoWatchdog = nil
       pending.removeAll()
       queued.removeAll()
-      usb.release()
+      device?.release()
       // Native completion closures retain their buffers through teardown.
       active.removeAll()
     }
   }
   func run() {
-    usb.disconnected = { [weak self] in self?.connection.interrupt() }
     defer {
       shutdownTransfers()
       target.ended()
@@ -445,11 +445,14 @@ final class Session {
     }
     do {
       let identity = target.identity!
-      try usb.open(target.matchingConfig, configuration: identity.configuration,
-        expectedRegistryID: identity.registryID == 0 ? nil : identity.registryID)
+      let opened = try target.openDevice(identity) { [weak self] in self?.connection.interrupt() }
+      serialized {
+        device = opened
+        transport = opened
+      }
       guard connection.operation(3, 0), connection.write(identity.record) else { return }
-      target.attached(usb.location)
-      EventLog.shared.write("Imported \(target.busID) physical port \(String(format:"%08x",usb.location))")
+      target.attached(opened.location)
+      EventLog.shared.write("Imported \(target.busID) physical port \(String(format:"%08x",opened.location))")
       while let h = connection.read(48, idle: true) {
         if h.u32(0) == 1 { if try !submit(h) { break } }
         else if h.u32(0) == 2 { unlink(h) }

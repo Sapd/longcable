@@ -19,10 +19,42 @@ public struct ConnectionAddresses: Sendable {
   }
 }
 public enum ConnectionSetup {
-  public static func windowsQuick(server: String) -> String {
-    "irm https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1 -OutFile $env:TEMP\\longcable-setup.ps1; & $env:TEMP\\longcable-setup.ps1 -Server \(psQuote(server))"
+  // Bus IDs a PC should attach: shared devices, plus Longcable Mic while it is on.
+  public static func sharedBusIDs(_ status: ServerStatus?) -> [String] {
+    guard let status else { return [] }
+    return status.devices.filter(\.enabled).map(\.id)
+      + (status.virtualMic?.enabled == true ? [LongcableMic.busID] : [])
   }
-  private static func psQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
+  // One constant command: the script asks the Mac which devices it shares
+  // (GET /longcable/v1/shared), so the same line works after every change. It runs
+  // from memory, so no execution policy can block it.
+  public static func windowsQuick(server: String, scriptURL: String) -> String {
+    "& ([scriptblock]::Create((irm \(psQuote(scriptURL))))) -Server \(psQuote(server))"
+  }
+  // Built from local changes or an unpushed commit: no published script of its own.
+  public static func isLocalBuild(describe: String?) -> Bool { describe == "local" }
+  // The script that matches this build: its release, or its exact commit for a
+  // build between releases (describe like v0.3.2-27-ge0c0436). Local builds use
+  // the newest release's script.
+  public static func scriptURL(describe: String?, commit: String?) -> String {
+    let latest = "https://github.com/Sapd/longcable/releases/latest/download/setup-windows.ps1"
+    guard let describe, !describe.isEmpty else { return latest }
+    if describe.range(of: #"^v\d+(\.\d+)*$"#, options: .regularExpression) != nil {
+      return "https://github.com/Sapd/longcable/releases/download/\(describe)/setup-windows.ps1"
+    }
+    guard let commit, commit.range(of: "^[0-9a-f]{7,40}$", options: .regularExpression) != nil else { return latest }
+    return "https://raw.githubusercontent.com/Sapd/longcable/\(commit)/scripts/setup-windows.ps1"
+  }
+  // PowerShell ends a single-quoted string at ' and at the typographic quotes
+  // U+2018…U+201B; doubling any of them keeps it inside the string.
+  private static func psQuote(_ value: String) -> String {
+    var out = "'"
+    for c in value {
+      if "'\u{2018}\u{2019}\u{201A}\u{201B}".contains(c) { out.append(c) }
+      out.append(c)
+    }
+    return out + "'"
+  }
   private static func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
   public static func windowsManual(server: String, busIDs: [String]) -> String {
     (["$usbip = 'C:\\Program Files\\USBip\\usbip.exe'", "& $usbip list -r \(psQuote(server))"]
