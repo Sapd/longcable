@@ -8,6 +8,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 version=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo 0.0.0)}
 version=${version#v}
+# Lets the app point its Windows command at the matching setup script.
+describe=$(git describe --tags --always 2>/dev/null || echo "")
+commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+# Only a clean build of a tag (pre-releases too) or of a pushed commit has its
+# script on GitHub; local changes, untracked files included, make it "local".
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  describe=local commit=""
+elif ! git describe --tags --exact-match >/dev/null 2>&1 && [ -z "$(git branch -r --contains HEAD 2>/dev/null)" ]; then
+  describe=local commit=""
+fi
 build=(swift build -c release --arch arm64 --arch x86_64 --disable-sandbox)
 "${build[@]}"
 bin=$("${build[@]}" --show-bin-path)
@@ -42,6 +52,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$version</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>LongcableDescribe</key><string>$describe</string>
+<key>LongcableCommit</key><string>$commit</string>
+<key>NSMicrophoneUsageDescription</key><string>Longcable records your chosen microphone only while a Windows PC is using Longcable Mic.</string>
 <key>NSHumanReadableCopyright</key><string>Copyright 2026 Denis Arnst (Sapd). GPL-3.0-or-later.</string>
 </dict></plist>
 PLIST
