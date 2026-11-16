@@ -27,24 +27,24 @@ enum VirtualMic {
   }
 
   static var configurationDescriptor: Data {
-    let rate = [UInt8(sampleRate & 0xff), UInt8((sampleRate >> 8) & 0xff), UInt8(sampleRate >> 16)]
-    let controlBody: [UInt8] =
-      // Audio control header: bcdADC 1.00, total 30, one streaming interface (1).
-      [9, 0x24, 1, 0x00, 0x01, 30, 0, 1, 1]
-      // Input terminal 1: microphone, mono.
-      + [12, 0x24, 2, 1, 0x01, 0x02, 0, 1, 0x00, 0x00, 0, 0]
-      // Output terminal 2: USB streaming, fed by terminal 1.
-      + [9, 0x24, 3, 2, 0x01, 0x01, 0, 1, 0]
-    let streaming: [UInt8] =
-      [9, 4, 1, 0, 0, 1, 2, 0, 0]  // interface 1 alt 0: zero bandwidth
-      + [9, 4, 1, 1, 1, 1, 2, 0, 0]  // interface 1 alt 1: one endpoint
-      + [7, 0x24, 1, 2, 1, 0x01, 0x00]  // AS general: terminal 2, delay 1, PCM
-      + [11, 0x24, 2, 1, 1, 2, 16, 1] + rate  // Type I: mono, 2-byte, 16-bit, one rate
-      + [9, 5, streamingEndpoint, 0x05, UInt8(maxPacketBytes), 0, 1, 0, 0]  // iso IN async
-      + [7, 0x25, 1, 0x01, 0, 0, 0]  // class endpoint: sampling frequency control
-    let body: [UInt8] = [9, 4, 0, 0, 0, 1, 1, 0, 0] + controlBody + streaming
+    // Appended piece by piece: one long `+` chain of literals is too slow for the
+    // Swift type checker on some compilers.
+    let rate: [UInt8] = [UInt8(sampleRate & 0xff), UInt8((sampleRate >> 8) & 0xff), UInt8(sampleRate >> 16)]
+    var body: [UInt8] = []
+    body += [9, 4, 0, 0, 0, 1, 1, 0, 0] as [UInt8]  // interface 0: audio control
+    body += [9, 0x24, 1, 0x00, 0x01, 30, 0, 1, 1] as [UInt8]  // AC header: bcdADC 1.00, total 30, streaming interface 1
+    body += [12, 0x24, 2, 1, 0x01, 0x02, 0, 1, 0x00, 0x00, 0, 0] as [UInt8]  // input terminal 1: microphone, mono
+    body += [9, 0x24, 3, 2, 0x01, 0x01, 0, 1, 0] as [UInt8]  // output terminal 2: USB streaming, from terminal 1
+    body += [9, 4, 1, 0, 0, 1, 2, 0, 0] as [UInt8]  // interface 1 alt 0: zero bandwidth
+    body += [9, 4, 1, 1, 1, 1, 2, 0, 0] as [UInt8]  // interface 1 alt 1: one endpoint
+    body += [7, 0x24, 1, 2, 1, 0x01, 0x00] as [UInt8]  // AS general: terminal 2, delay 1, PCM
+    body += [11, 0x24, 2, 1, 1, 2, 16, 1] as [UInt8]  // Type I: mono, 2-byte, 16-bit, one rate
+    body += rate
+    body += [9, 5, streamingEndpoint, 0x05, UInt8(maxPacketBytes), 0, 1, 0, 0] as [UInt8]  // iso IN async
+    body += [7, 0x25, 1, 0x01, 0, 0, 0] as [UInt8]  // class endpoint: sampling frequency control
     let total = 9 + body.count
-    return Data([9, 2, UInt8(total & 0xff), UInt8(total >> 8), 2, 1, 0, 0x80, 50] + body)
+    let header: [UInt8] = [9, 2, UInt8(total & 0xff), UInt8(total >> 8), 2, 1, 0, 0x80, 50]
+    return Data(header + body)
   }
 
   static func stringDescriptor(_ index: UInt8, serial: String) -> Data? {
