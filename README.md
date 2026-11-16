@@ -142,6 +142,13 @@ The installer verifies the release checksum, installs the background service and
 opens Longcable. It allows your tailnet if Tailscale is running, otherwise your
 primary LAN subnet. It prints the choice and how to override it.
 
+Or with [Homebrew](https://github.com/Sapd/homebrew-longcable), which also keeps it
+updated with `brew upgrade`:
+
+```sh
+brew install --cask sapd/longcable/longcable
+```
+
 1. Tick the devices you want to share in the app (and, under **Microphone on Windows**,
    choose **Share the Mac's microphone** if you want it).
 2. Click **Connect a PC**, then **Copy command**.
