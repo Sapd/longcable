@@ -119,7 +119,7 @@ function Write-Log {
         if ($logLines.Count -eq 0) { return }
         $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         $old = @(if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile -Tail 400 })
-        Write-StateFile $logFile ($old + @($logLines | ForEach-Object { "$stamp  $_" }))
+        Write-StateFile $logFile ($old + @($logLines | Where-Object { "$_".Trim() } | ForEach-Object { "$stamp  $_" }))
     } catch { }
 }
 # Stops the script without 'exit': run from memory in an interactive console,

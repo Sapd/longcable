@@ -150,6 +150,9 @@ switch ($Step) {
   }
   'autosyncwrongmac' {
     # Something else answers at the address now (another id), sharing 1-6 and not 1-7.
+    # The log may be shared with a real task on this PC: count only lines added here.
+    function WrongMacLines { @(if (Test-Path $logFile) { Get-Content $logFile | Where-Object { $_ -match 'Something other than the Mac' } }).Count }
+    $before = WrongMacLines
     $result = RunTask
     Check 'task reports failure' ($result -eq 1)
     Check 'nothing changed: 1-6 not attached, 1-7 still retried' ((@(Waiting3241) -match ',1-6$').Count -eq 0 -and (@(Waiting3241) -match ',1-7$').Count -eq 1)
@@ -157,17 +160,20 @@ switch ($Step) {
     $deadline = (Get-Date).AddSeconds(60)
     while ((Attached3241).Count -ne 1 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
     Check 'mic reconnected by usbip-win2, not by the task' ((Attached3241).Count -eq 1)
-    $lines = @(Get-Content $logFile | Where-Object { $_ -match 'Something other than the Mac' })
-    Check 'logged once' ($lines.Count -eq 1)
+    Check 'logged once' ((WrongMacLines) - $before -eq 1)
     $null = RunTask
-    $lines = @(Get-Content $logFile | Where-Object { $_ -match 'Something other than the Mac' })
-    Check 'the same problem again is not logged again' ($lines.Count -eq 1)
+    Check 'the same problem again is not logged again' ((WrongMacLines) - $before -eq 1)
   }
   'autosyncremove' {
     Setup $Ip 3241 '-RemoveAutoSync'
     Check 'exit code 0' ($lastExit -eq 0)
     Check 'task removed' (@(MyTask).Count -eq 0)
-    Check 'local copy and log removed' (-not (Test-Path (Join-Path $stateDir 'setup-windows.ps1')) -and -not (Test-Path $logFile))
+    if (@(Get-ScheduledTask -TaskPath '\Longcable\' -ErrorAction SilentlyContinue).Count -eq 0) {
+      Check 'local copy and log removed' (-not (Test-Path (Join-Path $stateDir 'setup-windows.ps1')) -and -not (Test-Path $logFile))
+    } else {
+      # This PC also syncs with another Mac: the shared copy stays, and the command says so.
+      Check 'copy kept for the other task, which is named' ((Test-Path (Join-Path $stateDir 'setup-windows.ps1')) -and $lastOutput -match 'Still syncing automatically with')
+    }
     Check 'devices stay as they are' ((Attached3241).Count -eq 1)
   }
   'removeall' {
