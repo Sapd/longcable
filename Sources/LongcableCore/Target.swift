@@ -141,7 +141,7 @@ final class Target: SessionTarget {
     }
   }
   // What macOS last reported for this device without opening it (name, audio).
-  private var seenName: String?, seenAudio: Bool?
+  private var seenName: String?, seenAudio: Bool?, seenKind: String?
   func snapshot(present: Bool = true, seen: LocalUSBDevice? = nil) -> DeviceStatus {
     let pinned = matchingConfig.portBound == true
     return stateLock.withLock {
@@ -149,6 +149,7 @@ final class Target: SessionTarget {
         if !seen.name.trimmingCharacters(in: .whitespaces).isEmpty { seenName = seen.name }
         // Never downgrade: while Windows has it, macOS may stop listing its interfaces.
         if let audio = seen.audio, audio || seenAudio == nil { seenAudio = audio }
+        if let kind = seen.kind { seenKind = kind }
       }
       return DeviceStatus(
         id: busID,
@@ -161,7 +162,7 @@ final class Target: SessionTarget {
         lastActivity: lastActivity, lastError: pinned && !present
           ? "Identical device: bound to its USB port. Plug it back into the same port or share it again."
           : lastError,
-        audio: seenAudio)
+        audio: seenAudio, kind: seenKind)
     }
   }
 }

@@ -132,13 +132,14 @@ public struct DeviceStatus: Codable, Identifiable, Sendable {
   public var lastActivity: Date?
   public var lastError: String?
   public var audio: Bool? = nil
+  public var kind: String? = nil  // see deviceKind
   public init(id: String, name: String, model: String, serial: String, enabled: Bool, state: String,
               location: String, completed: UInt64, bytes: UInt64, errors: UInt64, pending: Int,
-              lastActivity: Date?, lastError: String?, audio: Bool? = nil) {
+              lastActivity: Date?, lastError: String?, audio: Bool? = nil, kind: String? = nil) {
     self.id = id; self.name = name; self.model = model; self.serial = serial; self.enabled = enabled
     self.state = state; self.location = location; self.completed = completed; self.bytes = bytes
     self.errors = errors; self.pending = pending; self.lastActivity = lastActivity
-    self.lastError = lastError; self.audio = audio
+    self.lastError = lastError; self.audio = audio; self.kind = kind
   }
 }
 public struct ServerStatus: Codable, Sendable {

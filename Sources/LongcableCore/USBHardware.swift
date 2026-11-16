@@ -347,9 +347,14 @@ public struct LocalUSBDevice: Codable, Sendable, Equatable {
   // A USB microphone (see isMicrophone): offered in the app's Microphone card
   // instead of the general device list.
   public var audio: Bool? = nil
-  public init(vendor: String, product: String, location: String, name: String, serial: String, audio: Bool? = nil) {
+  // What it is, for the app's icon (see deviceKind), and whether it is a part of a
+  // dock or a display adapter that people rarely share (see isMinorDevice).
+  public var kind: String? = nil
+  public var minor: Bool? = nil
+  public init(vendor: String, product: String, location: String, name: String, serial: String, audio: Bool? = nil,
+              kind: String? = nil, minor: Bool? = nil) {
     self.vendor = vendor; self.product = product; self.location = location
-    self.name = name; self.serial = serial; self.audio = audio
+    self.name = name; self.serial = serial; self.audio = audio; self.kind = kind; self.minor = minor
   }
 }
 // A microphone has an audio streaming interface (class 1, subclass 2) and no camera
@@ -359,19 +364,53 @@ public struct LocalUSBDevice: Codable, Sendable, Equatable {
 func isMicrophone(interfaces: [(UInt32, UInt32)]) -> Bool {
   interfaces.contains { $0 == (1, 2) } && !interfaces.contains { $0.0 == 14 }
 }
-// (class, subclass) of the interfaces below a device, sometimes under a configuration.
-func interfaceClasses(_ service: io_service_t, depth: Int = 0) -> [(UInt32, UInt32)] {
+typealias USBInterface = (UInt32, UInt32, UInt32)  // class, subclass, protocol
+
+// For the icon. A YubiKey also types (keyboard interface), so keys come first.
+func deviceKind(deviceClass: UInt32, interfaces: [USBInterface], name: String) -> String? {
+  let lower = name.lowercased()
+  if interfaces.contains(where: { $0.0 == 11 }) || ["yubikey", "fido", "security key"].contains(where: lower.contains) {
+    return "security-key"
+  }
+  if interfaces.contains(where: { $0.0 == 8 }) { return "storage" }
+  if deviceClass == 14 || interfaces.contains(where: { $0.0 == 14 }) { return "camera" }
+  if interfaces.contains(where: { $0 == (3, 1, 1) }) { return "keyboard" }
+  if interfaces.contains(where: { $0 == (3, 1, 2) }) { return "mouse" }
+  return nil
+}
+// Folded away in the app: USB-C billboards (class 17; they only describe display
+// modes) and devices made by the same company as the hub they sit behind, which are
+// parts of that hub or dock.
+func isMinorDevice(deviceClass: UInt32, interfaces: [USBInterface], vendor: UInt32, hubVendor: UInt32?) -> Bool {
+  deviceClass == 17 || interfaces.contains(where: { $0.0 == 17 }) || hubVendor == vendor
+}
+// The vendor of the hub a device is plugged into, or nil when it is on the Mac's own port.
+func hubVendor(_ service: io_service_t) -> UInt32? {
+  var current = service
+  IOObjectRetain(current)
+  defer { IOObjectRelease(current) }
+  for _ in 0..<8 {
+    var parent: io_registry_entry_t = 0
+    guard IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
+    IOObjectRelease(current)
+    current = parent
+    if IOObjectConformsTo(current, "IOUSBHostDevice") != 0 { return number(current, "idVendor") }
+  }
+  return nil
+}
+// The interfaces below a device, sometimes under a configuration.
+func usbInterfaces(_ service: io_service_t, depth: Int = 0) -> [USBInterface] {
   guard depth < 3 else { return [] }
   var children: io_iterator_t = 0
   guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &children) == KERN_SUCCESS else { return [] }
   defer { IOObjectRelease(children) }
-  var found = [(UInt32, UInt32)]()
+  var found = [USBInterface]()
   while case let child = IOIteratorNext(children), child != 0 {
     defer { IOObjectRelease(child) }
     if IORegistryEntryCreateCFProperty(child, "bInterfaceClass" as CFString, kCFAllocatorDefault, 0) != nil {
-      found.append((number(child, "bInterfaceClass"), number(child, "bInterfaceSubClass")))
+      found.append((number(child, "bInterfaceClass"), number(child, "bInterfaceSubClass"), number(child, "bInterfaceProtocol")))
     }
-    found += interfaceClasses(child, depth: depth + 1)
+    found += usbInterfaces(child, depth: depth + 1)
   }
   return found
 }
@@ -406,12 +445,16 @@ public func discoverUSBDevices(allowedAppleDevices: [TargetConfig] = []) -> [Loc
     guard vendor <= 65535, product <= 65535, number(service, "bDeviceClass") != 9,
       deviceMayBeShared(vendor: vendor, product: product, location: number(service, "locationID"),
                         configured: allowedAppleDevices) else { continue }
+    let interfaces = usbInterfaces(service), deviceClass = number(service, "bDeviceClass")
+    let name = text(service, "USB Product Name")
     result.append(
       LocalUSBDevice(
         vendor: String(format: "%04x", vendor), product: String(format: "%04x", product),
         location: String(format: "%08x", number(service, "locationID")),
-        name: text(service, "USB Product Name"), serial: text(service, "USB Serial Number"),
-        audio: isMicrophone(interfaces: interfaceClasses(service))))
+        name: name, serial: text(service, "USB Serial Number"),
+        audio: isMicrophone(interfaces: interfaces.map { ($0.0, $0.1) }),
+        kind: deviceKind(deviceClass: deviceClass, interfaces: interfaces, name: name),
+        minor: isMinorDevice(deviceClass: deviceClass, interfaces: interfaces, vendor: vendor, hubVendor: hubVendor(service))))
   }
   return result.sorted { $0.location < $1.location }
 }

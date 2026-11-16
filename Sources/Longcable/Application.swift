@@ -260,19 +260,18 @@ struct SharingView: View {
               Text(
                 "Click Share once. Your choice is remembered when you reconnect the device, even in another port."
               ).font(.caption).foregroundStyle(.secondary)
-              ForEach(available, id: \.location) { device in
-                HStack {
-                  Image(systemName: "cable.connector").foregroundStyle(.secondary)
-                  VStack(alignment: .leading) {
-                    Text(device.name.isEmpty ? "USB device" : device.name)
-                    Text(device.vendor + ":" + device.product).font(.caption).foregroundStyle(
-                      .secondary)
-                  }
-                  Spacer()
-                  Button("Share") { model.add(device) }.disabled(
-                    !model.online || model.busy.contains(device.vendor + ":" + device.product))
-                }.padding(12).background(
-                  Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+              ForEach(available.filter { $0.minor != true }, id: \.location) { device in
+                AvailableDeviceRow(device: device, model: model)
+              }
+              let minor = available.filter { $0.minor == true }
+              if !minor.isEmpty {
+                DisclosureGroup("Dock parts and display adapters (\(minor.count))") {
+                  VStack(spacing: 8) {
+                    Text("Built into a hub or dock, or only describing display modes. Rarely useful on Windows.")
+                      .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(minor, id: \.location) { device in AvailableDeviceRow(device: device, model: model) }
+                  }.padding(.top, 6)
+                }.font(.callout).foregroundStyle(.secondary)
               }
             }
           } else {
@@ -298,6 +297,34 @@ struct SharingView: View {
 
   }
 }
+// SF Symbol for a device kind reported by the service (see deviceKind).
+func deviceSymbol(_ kind: String?) -> String {
+  switch kind {
+  case "storage": return "externaldrive"
+  case "keyboard": return "keyboard"
+  case "mouse": return "computermouse"
+  case "security-key": return "key"
+  case "camera": return "web.camera"
+  default: return "cable.connector"
+  }
+}
+struct AvailableDeviceRow: View {
+  let device: LocalUSBDevice
+  @ObservedObject var model: SharingModel
+  var body: some View {
+    HStack {
+      Image(systemName: deviceSymbol(device.kind)).foregroundStyle(.secondary).frame(width: 22)
+      VStack(alignment: .leading) {
+        Text(device.name.isEmpty ? "USB device" : device.name).foregroundStyle(.primary)
+        Text(device.vendor + ":" + device.product).font(.caption).foregroundStyle(.secondary)
+      }
+      Spacer()
+      Button("Share") { model.add(device) }.disabled(
+        !model.online || model.busy.contains(device.vendor + ":" + device.product))
+    }.padding(12).background(
+      Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+  }
+}
 struct DeviceCard: View {
   let device: DeviceStatus
   @ObservedObject var model: SharingModel
@@ -307,7 +334,7 @@ struct DeviceCard: View {
     if device.model.hasPrefix("2104") { return "eye" }
     if device.model.hasPrefix("28de") { return "gamecontroller" }
     if let hand = JoystickHand.detect(in: device.name) { return hand.symbol }
-    return device.model.hasPrefix("231d") ? "gamecontroller" : "cable.connector"
+    return device.model.hasPrefix("231d") ? "gamecontroller" : deviceSymbol(device.kind)
   }
   var connected: Bool { device.state == "Connected to Windows" }
   var body: some View {

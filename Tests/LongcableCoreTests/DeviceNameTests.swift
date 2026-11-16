@@ -54,6 +54,29 @@ final class DeviceNameTests: XCTestCase {
     XCTAssertFalse(isMicrophone(interfaces: [(3, 0)]), "joystick")
   }
 
+  // Values as macOS reports them for real devices: (class, subclass, protocol).
+  func testDeviceKinds() {
+    XCTAssertEqual(deviceKind(deviceClass: 0, interfaces: [(8, 6, 98), (8, 6, 80)], name: "Ugreen Storage Device"), "storage")
+    XCTAssertEqual(deviceKind(deviceClass: 0, interfaces: [(3, 1, 1), (3, 1, 1), (3, 0, 0)], name: "Keychron Q6 HE"), "keyboard")
+    XCTAssertEqual(deviceKind(deviceClass: 0, interfaces: [(3, 1, 2)], name: "Mouse"), "mouse")
+    XCTAssertEqual(deviceKind(deviceClass: 0, interfaces: [(3, 1, 1), (3, 0, 0), (11, 0, 0)], name: "YubiKey OTP+FIDO+CCID"),
+                   "security-key", "a key that also types counts as a key")
+    XCTAssertEqual(deviceKind(deviceClass: 0, interfaces: [(3, 0, 0)], name: "Security Key by Yubico"), "security-key")
+    XCTAssertEqual(deviceKind(deviceClass: 239, interfaces: [(14, 1, 0), (14, 2, 0), (1, 1, 0), (1, 2, 0)], name: "Webcam"), "camera")
+    XCTAssertNil(deviceKind(deviceClass: 0, interfaces: [(3, 0, 0)], name: " VKBsim Gladiator EVO R"))
+  }
+
+  func testDockPartsAndDisplayAdaptersAreMinor() {
+    // USB-C billboards only describe display modes.
+    XCTAssertTrue(isMinorDevice(deviceClass: 17, interfaces: [(17, 0, 0)], vendor: 0x2109, hubVendor: 0x2188))
+    XCTAssertTrue(isMinorDevice(deviceClass: 0, interfaces: [(255, 0, 0), (17, 0, 0)], vendor: 0x2188, hubVendor: 0x2188))
+    // Made by the same company as the hub it sits behind: part of the dock.
+    XCTAssertTrue(isMinorDevice(deviceClass: 0, interfaces: [(3, 0, 0)], vendor: 0x2188, hubVendor: 0x2188))
+    // A keyboard or joystick plugged into the dock is not.
+    XCTAssertFalse(isMinorDevice(deviceClass: 0, interfaces: [(3, 1, 1)], vendor: 0x3434, hubVendor: 0x2188))
+    XCTAssertFalse(isMinorDevice(deviceClass: 0, interfaces: [(3, 0, 0)], vendor: 0x231d, hubVendor: nil))
+  }
+
   func testMicrophoneIsRememberedAcrossRestartWhileUnplugged() throws {
     let args = ["127.0.0.1", "127.0.0.1", "fd9", "70", "2100000", "USB0FD90070"]
     let wave = LocalUSBDevice(vendor: "0fd9", product: "0070", location: "02100000", name: "Elgato Wave:3", serial: "", audio: true)
