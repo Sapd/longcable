@@ -31,103 +31,6 @@ to install there.
   <img src="Artwork/screenshot.png" width="600" alt="Longcable window: both VKB sticks and the eye tracker connected to the Windows PC">
 </p>
 
-## Features
-
-- **USB over IP from a Mac:** share USB devices with a Windows or Linux PC over the
-  standard USB/IP protocol (TCP port 3240).
-- **Nothing extra on Windows:** the official, signed usbip-win2 client is all you need.
-  It remembers your devices across reboots and dropped connections.
-- **Stable bus IDs:** a device keeps its bus ID across reconnects and Mac port changes.
-- **Menu-bar app:** tick the devices to share; **Connect a PC** gives you the Windows
-  command to copy.
-- **Tailscale or LAN:** only PCs on the peer list may connect.
-- **Forward your Mac's microphone to Windows (Longcable Mic, experimental):** one switch
-  in the app turns any Mac input into a virtual USB microphone on the Windows PC, while
-  the Mac keeps using it. See
-  [Forward your Mac's microphone to Windows](#forward-your-macs-microphone-to-windows-longcable-mic).
-- **USB microphone passthrough (experimental):** under **Microphone on Windows**, hand a
-  USB microphone over to Windows as a whole device, with its own drivers.
-- **Free and open source** (GPL-3.0).
-
-## Why I built it: HOTAS and eye tracking over game streaming
-
-I play **Star Citizen** on a Windows gaming PC and stream it to my Mac with
-**Moonlight** (from a **Sunshine** or **Apollo** host; **Artemis** works the same way).
-Game streaming forwards keyboard, mouse and gamepads, but not a HOTAS setup or an eye
-tracker. Longcable forwards those devices to the gaming PC, so the game sees them as
-locally connected.
-
-My setup, all running through Longcable:
-
-| Device | VID:PID | Used for |
-|---|---|---|
-| VKBsim Gladiator EVO **L** | `231d:0201` | left stick (dual-stick setup) |
-| VKBsim Gladiator EVO **R** | `231d:0200` | right stick |
-| Tobii Eye Tracker 5 | `2104:0313` | head tracking |
-| Steam Controller puck | `28de:1304` | controller receiver |
-| Elgato Wave:3 | `0fd9:0070` | microphone (experimental isochronous support) |
-
-## Tested hardware and results
-
-Tested on an Apple Silicon Mac (macOS 27) with Windows 11 and usbip-win2 0.9.8.1:
-
-- Two VKB sticks and a Tobii eye tracker at once: hours of Star Citizen, and zero failed
-  reads in a 20-second input check.
-- Survives unplugging, USB port changes, service restarts, network drops and Windows
-  reboots: devices come back by themselves.
-- Longcable Mic: a test tone arrives exactly, the Mac keeps using the microphone, and
-  Discord hears it.
-- The Windows setup command, tested end to end on a real PC.
-
-<details>
-<summary>All test results</summary>
-
-| Test | Result |
-|---|---|
-| Both VKB sticks and the eye tracker at the same time | all recognised by Windows as game controllers, no transfer errors on the sticks |
-| Input check over 20 seconds | ~1,240 reads per stick, zero failures |
-| Unplug and replug a stick on the Mac | device left and came back on Windows by itself |
-| Moving a stick to another Mac USB port | same bus ID and the same device identity on Windows |
-| Killing the Longcable service | launchd restarted it; Windows reattached the devices |
-| Restarting the service | Windows reattached by itself after ~30 s |
-| 30-second network drop (Tailscale off) | the connection survived; nothing to reattach |
-| Rebooting Windows | stashed devices came back by themselves |
-| Both usbip-win2 receive modes | work; low-latency is the one I use |
-| A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
-| Elgato Wave:3 microphone (experimental) | records on Windows and in Discord, no dropouts; 5× start/stop clean; after unplug/replug it needs **Reconnect** |
-| Longcable Mic (virtual microphone, experimental) | Windows loads its own USB audio driver, no errors in Device Manager; a 440 Hz test tone arrives at exactly 440 Hz with no gaps; the MacBook microphone records on Windows while the Mac records it at the same time; Discord's mic test plays the voice back |
-
-Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
-Unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
-filter, peer allowlists, the virtual microphone) and installer checks in a sandbox without sudo.
-
-The Windows setup command has its own end-to-end test against a real PC
-([`scripts/test-setup-e2e.sh`](scripts/test-setup-e2e.sh)): first setup, re-runs,
-unplugged devices, the same Mac under another name, an unreachable Mac, an older Longcable
-service, a cut-off reply, automatic syncing (install, a change followed by the task,
-removal) and removal of everything, with other servers' devices left untouched.
-
-</details>
-
-## How it works: USB/IP from a Mac to Windows
-
-```
-USB device ──▶ Mac (Longcable) ══ USB/IP over TCP 3240 ══▶ Windows (usbip-win2) ──▶ game
-```
-
-Longcable takes the whole device away from macOS while it is shared and gives it back
-when you stop sharing. Bus IDs (`1-1`, `1-2`, …) stay stable across reconnects and Mac
-port changes, so the Windows side can remember them.
-
-[Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic) is different: it is a virtual USB microphone that Longcable creates
-itself (bus ID `2-1`). The Mac keeps the real microphone.
-
-```
-Mac microphone ──▶ Longcable (records) ══ USB/IP over TCP 3240 ══▶ Windows: "Longcable Mic" ──▶ Discord / game
-      │
-      └──▶ Mac apps keep using it at the same time
-```
-
 ## Setup: install on the Mac, connect a Windows PC
 
 ### Quick start
@@ -271,6 +174,103 @@ Set-ItemProperty $p ReattachFirstDelay 5 -Type DWord
 ```
 
 </details>
+
+## Features
+
+- **USB over IP from a Mac:** share USB devices with a Windows or Linux PC over the
+  standard USB/IP protocol (TCP port 3240).
+- **Nothing extra on Windows:** the official, signed usbip-win2 client is all you need.
+  It remembers your devices across reboots and dropped connections.
+- **Stable bus IDs:** a device keeps its bus ID across reconnects and Mac port changes.
+- **Menu-bar app:** tick the devices to share; **Connect a PC** gives you the Windows
+  command to copy.
+- **Tailscale or LAN:** only PCs on the peer list may connect.
+- **Forward your Mac's microphone to Windows (Longcable Mic, experimental):** one switch
+  in the app turns any Mac input into a virtual USB microphone on the Windows PC, while
+  the Mac keeps using it. See
+  [Forward your Mac's microphone to Windows](#forward-your-macs-microphone-to-windows-longcable-mic).
+- **USB microphone passthrough (experimental):** under **Microphone on Windows**, hand a
+  USB microphone over to Windows as a whole device, with its own drivers.
+- **Free and open source** (GPL-3.0).
+
+## Why I built it: HOTAS and eye tracking over game streaming
+
+I play **Star Citizen** on a Windows gaming PC and stream it to my Mac with
+**Moonlight** (from a **Sunshine** or **Apollo** host; **Artemis** works the same way).
+Game streaming forwards keyboard, mouse and gamepads, but not a HOTAS setup or an eye
+tracker. Longcable forwards those devices to the gaming PC, so the game sees them as
+locally connected.
+
+My setup, all running through Longcable:
+
+| Device | VID:PID | Used for |
+|---|---|---|
+| VKBsim Gladiator EVO **L** | `231d:0201` | left stick (dual-stick setup) |
+| VKBsim Gladiator EVO **R** | `231d:0200` | right stick |
+| Tobii Eye Tracker 5 | `2104:0313` | head tracking |
+| Steam Controller puck | `28de:1304` | controller receiver |
+| Elgato Wave:3 | `0fd9:0070` | microphone (experimental isochronous support) |
+
+## Tested hardware and results
+
+Tested on an Apple Silicon Mac (macOS 27) with Windows 11 and usbip-win2 0.9.8.1:
+
+- Two VKB sticks and a Tobii eye tracker at once: hours of Star Citizen, and zero failed
+  reads in a 20-second input check.
+- Survives unplugging, USB port changes, service restarts, network drops and Windows
+  reboots: devices come back by themselves.
+- Longcable Mic: a test tone arrives exactly, the Mac keeps using the microphone, and
+  Discord hears it.
+- The Windows setup command, tested end to end on a real PC.
+
+<details>
+<summary>All test results</summary>
+
+| Test | Result |
+|---|---|
+| Both VKB sticks and the eye tracker at the same time | all recognised by Windows as game controllers, no transfer errors on the sticks |
+| Input check over 20 seconds | ~1,240 reads per stick, zero failures |
+| Unplug and replug a stick on the Mac | device left and came back on Windows by itself |
+| Moving a stick to another Mac USB port | same bus ID and the same device identity on Windows |
+| Killing the Longcable service | launchd restarted it; Windows reattached the devices |
+| Restarting the service | Windows reattached by itself after ~30 s |
+| 30-second network drop (Tailscale off) | the connection survived; nothing to reattach |
+| Rebooting Windows | stashed devices came back by themselves |
+| Both usbip-win2 receive modes | work; low-latency is the one I use |
+| A Star Citizen session | several hours of normal gaming with both sticks and the eye tracker |
+| Elgato Wave:3 microphone (experimental) | records on Windows and in Discord, no dropouts; 5× start/stop clean; after unplug/replug it needs **Reconnect** |
+| Longcable Mic (virtual microphone, experimental) | Windows loads its own USB audio driver, no errors in Device Manager; a 440 Hz test tone arrives at exactly 440 Hz with no gaps; the MacBook microphone records on Windows while the Mac records it at the same time; Discord's mic test plays the voice back |
+
+Automated checks run on every commit (see [the CI workflow](.github/workflows/build.yml)):
+Unit tests (USB/IP framing, transfers, sessions, device identity, the Apple-device
+filter, peer allowlists, the virtual microphone) and installer checks in a sandbox without sudo.
+
+The Windows setup command has its own end-to-end test against a real PC
+([`scripts/test-setup-e2e.sh`](scripts/test-setup-e2e.sh)): first setup, re-runs,
+unplugged devices, the same Mac under another name, an unreachable Mac, an older Longcable
+service, a cut-off reply, automatic syncing (install, a change followed by the task,
+removal) and removal of everything, with other servers' devices left untouched.
+
+</details>
+
+## How it works: USB/IP from a Mac to Windows
+
+```
+USB device ──▶ Mac (Longcable) ══ USB/IP over TCP 3240 ══▶ Windows (usbip-win2) ──▶ game
+```
+
+Longcable takes the whole device away from macOS while it is shared and gives it back
+when you stop sharing. Bus IDs (`1-1`, `1-2`, …) stay stable across reconnects and Mac
+port changes, so the Windows side can remember them.
+
+[Longcable Mic](#forward-your-macs-microphone-to-windows-longcable-mic) is different: it is a virtual USB microphone that Longcable creates
+itself (bus ID `2-1`). The Mac keeps the real microphone.
+
+```
+Mac microphone ──▶ Longcable (records) ══ USB/IP over TCP 3240 ══▶ Windows: "Longcable Mic" ──▶ Discord / game
+      │
+      └──▶ Mac apps keep using it at the same time
+```
 
 ## Forward your Mac's microphone to Windows (Longcable Mic)
 
