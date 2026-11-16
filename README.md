@@ -15,6 +15,8 @@ It is made for people who stream games from a Windows gaming PC to a Mac with Mo
 Sunshine, Apollo or Artemis and need their USB devices, and their voice, on the gaming
 PC: with the forwarded Mac microphone you can talk in Discord or in a game.
 
+**[Quick start](#quick-start)** · [Windows setup](#windows) · [Forward your microphone](#forward-your-macs-microphone-to-windows-longcable-mic) · [FAQ](#faq) · [VirtualHere alternative](#longcable-as-a-virtualhere-alternative-for-mac)
+
 USB/IP is built into Linux for sharing and using devices. Windows has
 [usbipd-win](https://github.com/dorssel/usbipd-win) for sharing and
 [usbip-win2](https://github.com/vadimgrn/usbip-win2) for using them. The Mac was the
