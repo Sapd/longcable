@@ -45,7 +45,7 @@ struct SetupView: View {
             Toggle(isOn: $autoSync) {
               VStack(alignment: .leading, spacing: 2) {
                 Text("Keep this PC in step automatically")
-                Text("Adds a Windows task that checks this Mac every minute, at startup and at login, and follows its changes. It runs as the system account and only acts when this Mac answers.")
+                Text("Adds a Windows task that checks this Mac every minute, at startup and at login, and follows its changes. It runs as the system account and skips runs when a different Mac answers at this address.")
                   .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
               }
             }.toggleStyle(.checkbox)

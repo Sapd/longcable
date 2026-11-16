@@ -173,10 +173,12 @@ runs the same script every minute, at startup and at login, so changes on the Ma
 the PC within a minute. It's opt-in and uses only Windows' own Task Scheduler (no extra
 app or service). The task runs as the system account from a copy of the script in
 `C:\Program Files\Longcable`, a folder only administrators can change, and logs to
-`sync.log` there (each change, and each new problem once). It only acts when the same Mac
-answers: if something else answers at that address, for example on another network, it
-changes nothing. Run the command with `-AutoSync` again to update the copy. To stop it, run
-it with `-RemoveAutoSync` instead (Connect a PC shows that command).
+`sync.log` there (each change, and each new problem once). It skips runs when a different
+Mac answers at that address, for example on another network. That check is not
+encryption or a password: like USB/IP itself, it trusts the network, so use it over
+Tailscale (encrypted and authenticated) or a network you trust. Run the command with
+`-AutoSync` again to update the copy. To stop it, run it with `-RemoveAutoSync` instead
+(Connect a PC shows that command).
 
 <p align="center">
   <img src="Artwork/connect-a-pc.png" width="600" alt="Three steps: click Connect a PC in the Longcable window, click Copy command, paste it into an administrator PowerShell on Windows and press Enter">

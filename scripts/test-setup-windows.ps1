@@ -127,7 +127,12 @@ switch ($Step) {
       ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value })
     Check 'files in the folder stay readable after the repair' ((Get-Content -Raw $copy) -match 'GET /longcable/v1/shared')
     Check 'only SYSTEM and administrators can change the folder' (@($writers | Where-Object { $_ -notin @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') }).Count -eq 0)
+    # A file inside that ordinary users can change must be caught too, not only the folder.
+    & icacls.exe $copy /grant '*S-1-5-32-545:M' /Q | Out-Null
     Setup $Ip 3241 '-AutoSync'
+    $userWrite = @((Get-Acl $copy).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and
+      $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-545' -and ([int]$_.FileSystemRights -band 0x500D0156) })
+    Check 'a user-writable file inside was repaired' ($userWrite.Count -eq 0)
     $again = ($lastExit -eq 0 -and @(MyTask).Count -eq 1)
     Check 'running it again keeps one task' $again
     if (-not $again) { Write-Host "FAIL detail: exit $lastExit, tasks $(@(MyTask).Count): $($lastOutput -replace "`n", ' / ')" }

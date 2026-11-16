@@ -58,18 +58,18 @@ $waitingFile = Join-Path $stateDir 'waiting.txt'
 $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $taskFolder = '\Longcable\'
 function Get-LongcableTasks { @(Get-ScheduledTask -TaskPath $taskFolder -ErrorAction SilentlyContinue) }
-# Writable only by SYSTEM, Administrators or TrustedInstaller, owned by one of them,
-# and not a link. Repairs the permissions if needed; fails if it can't.
+# The folder and everything in it: writable only by SYSTEM, Administrators or
+# TrustedInstaller, owned by one of them, and no links. Repairs the permissions if
+# needed; fails if it can't. Nothing is written to the folder before this passes.
+$state = @{ Safe = $false }
 function Assert-SafeFolder {
     $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     # Rights that change something: write data, append, extended attributes, delete children,
     # attributes, delete, change permissions, take ownership, generic all and generic write.
     $writeRights = 0x500D0156
-    function Test-Safe {
-        $item = Get-Item -LiteralPath $stateDir -Force
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
-        $acl = Get-Acl -LiteralPath $stateDir
-        $owner = (New-Object Security.Principal.NTAccount($acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
+    function Test-SafeItem($item) {
+        $acl = Get-Acl -LiteralPath $item.FullName
+        try { $owner = (New-Object Security.Principal.NTAccount($acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { return $false }
         if ($trusted -notcontains $owner) { return $false }
         foreach ($rule in $acl.Access) {
             if ($rule.AccessControlType -ne 'Allow' -or -not ([int]$rule.FileSystemRights -band $writeRights)) { continue }
@@ -78,25 +78,39 @@ function Assert-SafeFolder {
         }
         return $true
     }
+    function Get-Links { @(@(Get-Item -LiteralPath $stateDir -Force) + @(Get-ChildItem -LiteralPath $stateDir -Force -Recurse -Attributes ReparsePoint)) |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } }
+    function Test-Safe {
+        if (@(Get-Links).Count -gt 0) { return $false }
+        foreach ($item in @(@(Get-Item -LiteralPath $stateDir -Force) + @(Get-ChildItem -LiteralPath $stateDir -Force -Recurse))) {
+            if (-not (Test-SafeItem $item)) { return $false }
+        }
+        return $true
+    }
     if (-not (Test-Path -LiteralPath $stateDir)) { New-Item -ItemType Directory -Path $stateDir | Out-Null }
-    if (Test-Safe) { return }
-    $item = Get-Item -LiteralPath $stateDir -Force
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$stateDir is a link, not a folder. Delete it, then run the command again." }
+    if (Test-Safe) { $state.Safe = $true; return }
+    $links = @(Get-Links)
+    if ($links.Count -gt 0) {
+        Fail "$stateDir is or contains a link ($($links[0].FullName)), which nothing here creates. Delete it, then run the command again."
+    }
     # The folder gets fixed permissions; what is inside goes back to inheriting them.
     & icacls.exe $stateDir /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
     & icacls.exe $stateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /C /Q | Out-Null
     if (Get-ChildItem -LiteralPath $stateDir -Force) { & icacls.exe (Join-Path $stateDir '*') /reset /T /C /Q | Out-Null }
     if (-not (Test-Safe)) { Fail "Could not make $stateDir writable only by administrators. Nothing was changed." }
+    $state.Safe = $true
 }
 # Writes a file in the safe folder via a temporary file, so a reader never sees half of it.
 function Write-StateFile([string]$path, [string[]]$lines) {
+    if (-not $state.Safe) { throw "$stateDir is not protected" }
     $temp = "$path.new"
+    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
     Set-Content -LiteralPath $temp -Value $lines -Encoding ASCII
     Move-Item -LiteralPath $temp -Destination $path -Force
 }
 # Quiet runs log what changed or failed; the same problem every minute is logged once.
 function Write-Log {
-    if (-not $Quiet) { return }
+    if (-not $Quiet -or -not $state.Safe) { return }
     try {
         $summary = ($logLines -join ' | ')
         $last = if (Test-Path -LiteralPath $lastRunFile) { (Get-Content -LiteralPath $lastRunFile -Raw).Trim() } else { '' }
@@ -127,15 +141,22 @@ if ($MacId -and $MacId -notmatch '^[A-Za-z0-9-]{1,64}$') { Fail 'Invalid -MacId.
 if ($AutoSync -and ($Sync -or $PSBoundParameters.ContainsKey('BusIds'))) {
     Fail '-AutoSync follows what the Mac shares, so it cannot be combined with -Sync or -BusIds.'
 }
-# One run at a time (a manual run and the task, or tasks for two Macs).
-$mutex = New-Object System.Threading.Mutex($false, 'Global\LongcableSync')
-$haveMutex = $false
-try { $haveMutex = $mutex.WaitOne($(if ($Quiet) { 0 } else { 60000 })) } catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
-if (-not $haveMutex) {
-    if ($Quiet) { $logLines.Clear(); throw 'longcable-busy' }
-    Fail 'Another Longcable setup is running on this PC. Try again in a minute.'
-}
 Assert-SafeFolder
+# One run at a time (a manual run and the task, or tasks for two Macs). The lock is a
+# file in the protected folder, so ordinary users can't hold it to block syncing.
+$lock = $null
+$lockDeadline = (Get-Date).AddSeconds($(if ($Quiet) { 0 } else { 60 }))
+while (-not $lock) {
+    try {
+        $lock = [IO.File]::Open((Join-Path $stateDir 'sync.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    } catch [System.IO.IOException] {
+        if ((Get-Date) -ge $lockDeadline) {
+            if ($Quiet) { $logLines.Clear(); throw 'longcable-busy' }
+            Fail 'Another Longcable setup is running on this PC. Try again in a minute.'
+        }
+        Start-Sleep -Milliseconds 500
+    }
+}
 $BusIds = @($BusIds | Where-Object { $_ } | ForEach-Object { "$_".Trim() } | Select-Object -Unique)
 foreach ($bus in $BusIds) {
     if ($bus -notmatch '^\d+-[\d.]+$') { Fail "Invalid bus ID: $bus" }
@@ -487,7 +508,7 @@ if ($BusIds.Count -eq 0 -and $removed.Count -eq 0) {
 if ($saved -and -not $Quiet) { Say 'Windows will reconnect these after restarts and dropped connections.' }
 if ($autoSyncOn) {
     Say 'This PC now checks the Mac every minute (and at startup and login) and follows its changes by itself.' 'Green'
-    Say "It only acts when this Mac answers. Log: $logFile"
+    Say "It skips runs when a different Mac answers at $Server. Log: $logFile"
     Say 'To stop it, run the same command with -RemoveAutoSync instead of -AutoSync. Run it with -AutoSync again to update it.'
 } elseif ($Quiet) {
 } elseif ($legacy) {
@@ -507,7 +528,7 @@ $global:LASTEXITCODE = [int]($failed.Count -gt 0 -or $autoSyncFailed)
         if ("$_" -ne 'longcable-stop') { throw }
     }
 } finally {
-    if ($haveMutex) { $mutex.ReleaseMutex() }
+    if ($lock) { $lock.Dispose() }
 }
 # Run as a file (powershell -File), report success or failure as the exit code.
 # Run from memory (the pasted command) there is no file, and exit would close the window.
