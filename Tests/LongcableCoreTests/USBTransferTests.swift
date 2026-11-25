@@ -253,6 +253,21 @@ final class USBTransferTests: XCTestCase {
     XCTAssertEqual(peer.read(48)?.u32(20), 0)
     XCTAssertNotNil(peer.read(2))
   }
+  // usbip-win2 up to 0.9.8.1 sets URB_SHORT_NOT_OK on control IN; a short HID
+  // GET_REPORT reply (63 of 64 bytes) must still succeed.
+  func testShortControlInIgnoresShortNotOK() throws {
+    let (session, peer, transport) = try fixture()
+    XCTAssertTrue(try session.submit(header(1, endpoint: 0, length: 64, flags: 1)))
+    XCTAssertTrue(try session.submit(header(2, endpoint: 0, length: 64, flags: 1)))
+    finish(0, transport, session, bytes: 63)
+    var reply = try XCTUnwrap(peer.read(48))
+    XCTAssertEqual(reply.u32(20), 0); XCTAssertEqual(reply.u32(24), 63)
+    XCTAssertEqual(peer.read(63)?.count, 63)
+    finish(1, transport, session, result: kIOReturnUnderrun, bytes: 63)
+    reply = try XCTUnwrap(peer.read(48))
+    XCTAssertEqual(reply.u32(20), 0); XCTAssertEqual(reply.u32(24), 63)
+    XCTAssertEqual(peer.read(63)?.count, 63)
+  }
   func testShortNativeDescriptorStillOverlaysStableSerialIndex() throws {
     let (session, peer, transport) = try fixture()
     session.target.identity?.overlaySerial = true

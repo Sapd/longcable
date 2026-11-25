@@ -137,7 +137,10 @@ final class Session {
     }
     let shortTransfer = job.isoPackets.isEmpty && job.direction == 1 && count < job.expectedLength
       && (result == kIOReturnSuccess || result == kIOReturnUnderrun)
-    let status = statusOverride ?? (shortTransfer ? (job.flags & 1 != 0 ? -121 : 0)
+    // A short data stage is legal on a control pipe (USB 2.0 8.5.3.2). usbip-win2 up to
+    // 0.9.8.1 sets URB_SHORT_NOT_OK on every control IN, which fails HID GET_REPORT with -121.
+    let shortNotOK = job.request == nil && job.flags & 1 != 0
+    let status = statusOverride ?? (shortTransfer ? (shortNotOK ? -121 : 0)
       : (!job.isoPackets.isEmpty && result == kIOReturnUnderrun ? 0 : usbStatus(result)))
     var header = Data(count: 48)
     header.put32(0, 3)
